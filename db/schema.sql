@@ -1,0 +1,122 @@
+-- TalentOps Unified Pipeline Schema (Part 1 + Part 2)
+
+create extension if not exists "pgcrypto";
+create extension if not exists vector;
+
+-- ============================================================================
+-- Events (Append-only audit trail)
+-- ============================================================================
+create table if not exists public.events (
+    id          uuid primary key default gen_random_uuid(),
+    run_id      text not null,                 -- correlates all events of one pipeline run
+    ts          timestamptz not null default now(),
+    source      text not null,                 -- emitting node: 'manager' | 'sourcing' | 'screening' | etc.
+    event_type  text not null,                 -- 'run_started' | 'route' | 'agent_started' | 'agent_completed' | 'run_completed'
+    payload     jsonb not null default '{}'::jsonb
+);
+
+create index if not exists events_run_id_ts_idx on public.events (run_id, ts);
+create index if not exists events_type_idx       on public.events (event_type);
+
+-- ============================================================================
+-- Rubrics (Frozen per run)
+-- ============================================================================
+create table if not exists public.rubrics (
+    id            uuid primary key default gen_random_uuid(),
+    run_id        text not null unique,           -- one frozen rubric per run
+    content_hash  text not null,
+    standard      text not null,
+    competencies  jsonb not null default '[]'::jsonb,
+    created_at    timestamptz not null default now()
+);
+
+-- ============================================================================
+-- Vector Store Embeddings (pgvector)
+-- ============================================================================
+create table if not exists public.embeddings (
+    id          uuid primary key default gen_random_uuid(),
+    run_id      text not null,
+    kind        text not null,                    -- 'jd' | 'candidate'
+    ref_id      text not null,
+    embedding   vector(384),                      -- 384 dim matching all-MiniLM-L6-v2
+    metadata    jsonb not null default '{}'::jsonb,
+    created_at  timestamptz not null default now()
+);
+
+create index if not exists embeddings_run_kind_idx on public.embeddings (run_id, kind);
+
+-- Nearest-neighbour match function
+create or replace function public.match_embeddings(
+    p_run_id text, p_kind text, p_query vector(384), p_top_k int
+)
+returns table (ref_id text, score float, metadata jsonb)
+language sql stable as $$
+    select ref_id, 1 - (embedding <=> p_query) as score, metadata
+    from public.embeddings
+    where run_id = p_run_id and kind = p_kind
+    order by embedding <=> p_query
+    limit p_top_k;
+$$;
+
+-- ============================================================================
+-- Roles, Candidates, Interviews, Scorecards, Demographics, Calibration, Comms
+-- ============================================================================
+create table if not exists public.roles (
+    id                text primary key,
+    jd                text not null,
+    frozen            boolean default true,
+    difficulty_level  text default 'L2',
+    rubric            jsonb default '{}'::jsonb,
+    created_at        timestamptz default now()
+);
+
+create table if not exists public.candidates (
+    id          text primary key,
+    role_id     text references public.roles(id) on delete cascade,
+    name        text not null,
+    resume      text default '',
+    created_at  timestamptz default now()
+);
+
+create table if not exists public.interviews (
+    id            text primary key,
+    role_id       text,
+    candidate_id  text,
+    transcript    jsonb default '[]'::jsonb,
+    questions     jsonb default '[]'::jsonb,
+    created_at    timestamptz default now()
+);
+
+create table if not exists public.scorecards (
+    id            uuid primary key default gen_random_uuid(),
+    interview_id  text,
+    candidate_id  text,
+    scorecard     jsonb default '{}'::jsonb,
+    created_at    timestamptz default now()
+);
+
+create table if not exists public.demographics (
+    id            uuid primary key default gen_random_uuid(),
+    candidate_id  text unique,
+    cohort        jsonb default '{}'::jsonb,
+    created_at    timestamptz default now()
+);
+
+create table if not exists public.calibration (
+    id            uuid primary key default gen_random_uuid(),
+    interview_id  text,
+    rtt_ms        float default 0.0,
+    jitter_ms     float default 0.0,
+    audio_level   float default 0.0,
+    passed        boolean default true,
+    created_at    timestamptz default now()
+);
+
+create table if not exists public.comms (
+    id          uuid primary key default gen_random_uuid(),
+    "to"        text not null,
+    subject     text not null,
+    body        text not null,
+    status      text default 'sent',
+    created_at  timestamptz default now()
+);

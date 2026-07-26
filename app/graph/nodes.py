@@ -1,0 +1,149 @@
+"""Manager Agent node + specialized sub-agent nodes.
+
+All five sub-agents have complete implementations. The Manager routes
+deterministically and owns all user-facing communication.
+"""
+from __future__ import annotations
+
+from app.agents.communication import send_invite
+from app.agents.interviewer import run_interview
+from app.agents.reporting import run_reporting
+from app.agents.scheduling import run_scheduling
+from app.agents.screening import run_screening
+from app.agents.sourcing import run_sourcing
+from app.graph.envelope import make_envelope
+from app.graph.state import SUB_AGENTS, PipelineState
+from app.rubric.rubric import Rubric, generate_rubric
+from app.supabase_client import log_event
+
+
+def manager_node(state: PipelineState) -> dict:
+    """Decide which sub-agent runs next (or FINISH) based on explicit WorkflowStage."""
+    from app.agents.manager_agent import determine_next_stage
+
+    completed = state.get("completed", [])
+    current_stage = state.get("stage")
+    next_stage, nxt = determine_next_stage(current_stage, completed)
+
+    log_event(state["run_id"], source="manager", event_type="route",
+              payload={"stage": next_stage, "next": nxt, "completed": completed})
+
+    envelope = make_envelope(
+        sender="manager",
+        recipient=nxt if nxt != "FINISH" else "FINISH",
+        kind="dispatch" if nxt != "FINISH" else "finish",
+        body={"goal": state["goal"], "stage": next_stage},
+    )
+    return {"stage": next_stage, "next": nxt, "messages": [envelope]}
+
+
+def _emit(run_id: str, name: str, result: dict) -> dict:
+    log_event(run_id, source=name, event_type="agent_completed", payload=result)
+    return make_envelope(sender=name, recipient="manager", kind="result", body=result)
+
+
+def sourcing_node(state: PipelineState) -> dict:
+    from app.graph.state import WorkflowStage
+    run_id = state["run_id"]
+    log_event(run_id, source="sourcing", event_type="agent_started", payload={"goal": state["goal"]})
+    result = run_sourcing(run_id, state["goal"], state.get("corpus"))
+    env = _emit(run_id, "sourcing", {"count": result["count"]})
+    return {"stage": WorkflowStage.SCREENING, "completed": ["sourcing"], "candidates": result["candidates"], "messages": [env]}
+
+
+def screening_node(state: PipelineState) -> dict:
+    from app.graph.state import WorkflowStage
+    run_id = state["run_id"]
+    log_event(run_id, source="screening", event_type="agent_started", payload={})
+
+    rubric = generate_rubric(run_id, state.get("standard") or state["goal"])
+    log_event(run_id, source="screening", event_type="rubric_frozen",
+              payload={"content_hash": rubric.content_hash,
+                       "competencies": [c.name for c in rubric.competencies]})
+
+    result = run_screening(run_id, state["goal"], rubric)
+    top = result["shortlist"][0]["ref_id"] if result["shortlist"] else None
+    env = _emit(run_id, "screening", result)
+    return {
+        "stage": WorkflowStage.SCHEDULING,
+        "completed": ["screening"],
+        "rubric": rubric.model_dump(),
+        "shortlist": result["shortlist"],
+        "top_candidate": top,
+        "needs_review": result["needs_review"],
+        "messages": [env],
+    }
+
+
+def scheduling_node(state: PipelineState) -> dict:
+    from app.graph.state import WorkflowStage
+    run_id = state["run_id"]
+    log_event(run_id, source="scheduling", event_type="agent_started", payload={})
+    result = run_scheduling(run_id, state.get("top_candidate"))
+
+    if result.get("status") == "booked" and state.get("top_candidate"):
+        meet_link = result["booking"].get("meet_link")
+        invite = send_invite(run_id, state["top_candidate"], result["booking"]["start"], meet_link=meet_link)
+        result["invite_email"] = invite
+
+    env = _emit(run_id, "scheduling", result)
+    return {"stage": WorkflowStage.INTERVIEWING, "completed": ["scheduling"], "results": {"scheduling": result}, "messages": [env]}
+
+
+def interviewer_node(state: PipelineState) -> dict:
+    from app.graph.state import WorkflowStage
+    run_id = state["run_id"]
+    log_event(run_id, source="interviewer", event_type="agent_started",
+              payload={"candidate": state.get("top_candidate")})
+
+    top = state.get("top_candidate")
+    if not top or not state.get("rubric"):
+        result = {"status": "skipped", "reason": "no candidate or rubric"}
+        env = _emit(run_id, "interviewer", result)
+        return {"stage": WorkflowStage.EVALUATION, "completed": ["interviewer"], "results": {"interview": result}, "messages": [env]}
+
+    rubric = Rubric(**state["rubric"])
+    result = run_interview(run_id, rubric, top)
+    env = _emit(run_id, "interviewer", {
+        "candidate": result["candidate"],
+        "overall_score": result["overall_score"],
+        "coverage_rate": result["coverage_rate"],
+        "needs_review": result["needs_review"],
+    })
+    return {"stage": WorkflowStage.EVALUATION, "completed": ["interviewer"], "results": {"interview": result}, "messages": [env]}
+
+
+def reporting_node(state: PipelineState) -> dict:
+    from app.graph.state import WorkflowStage
+    run_id = state["run_id"]
+    log_event(run_id, source="reporting", event_type="agent_started", payload={})
+    report = run_reporting(run_id, dict(state))
+
+    # Generate Manager Debrief Meet link & script for Human HR
+    from app.agents.manager_debrief import build_manager_debrief_script
+    debrief_meet = f"https://meet.google.com/mgr-{run_id[:4]}-{run_id[4:8]}"
+    debrief_script = build_manager_debrief_script(run_id, dict(state))
+
+    manager_debrief = {
+        "meet_link": debrief_meet,
+        "script": debrief_script,
+        "status": "ready",
+    }
+    report["manager_debrief"] = manager_debrief
+
+    env = _emit(run_id, "reporting", {
+        "decision": report["decision"],
+        "emails_sent": len(report["emails_sent"]),
+        "needs_human_review": report["needs_human_review"],
+        "manager_debrief_link": debrief_meet,
+    })
+    return {"stage": WorkflowStage.HR_DEBRIEF, "completed": ["reporting"], "report": report, "messages": [env]}
+
+
+WORKER_NODES = {
+    "sourcing": sourcing_node,
+    "screening": screening_node,
+    "scheduling": scheduling_node,
+    "interviewer": interviewer_node,
+    "reporting": reporting_node,
+}

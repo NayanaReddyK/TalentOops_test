@@ -1,0 +1,38 @@
+# Environment & Secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+!.env.example
+token.json
+
+# Logs & Temporary Files
+*.log
+talentops.log
+temp_uploads/
+tmp/
+*.tmp
+
+# Python Caches & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+env/
+.venv/
+
+# Node & Dependencies
+node_modules/
+dist/
+build/
+
+# IDE & OS Artifacts
+.DS_Store
+.vscode/
+.idea/
+.claude/

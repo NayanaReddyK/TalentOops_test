@@ -1,0 +1,61 @@
+.upload-zone {
+  border: 2px dashed var(--border);
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 40px 20px;
+  text-align: center;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  margin-bottom: 20px;
+}
+
+.upload-zone:hover, .upload-zone.drag-active {
+  border-color: var(--accent);
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.upload-zone.has-file {
+  border: 2px solid rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.05);
+  cursor: default;
+}
+
+.upload-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.upload-icon {
+  font-size: 40px;
+  margin-bottom: 10px;
+  opacity: 0.8;
+}
+
+.success-icon {
+  font-size: 30px;
+  color: var(--green);
+}
+
+.upload-zone h3 {
+  font-size: 16px;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.upload-zone p {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.upload-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.upload-success .btn-sec {
+  margin-top: 10px;
+}
