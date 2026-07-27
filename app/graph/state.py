@@ -7,10 +7,11 @@ from typing import Annotated, Any, TypedDict
 
 
 class WorkflowStage(str, Enum):
-    """Canonical 6-stage recruitment lifecycle states."""
+    """Canonical recruitment lifecycle states."""
     APPLICATION_RECEIVED = "APPLICATION_RECEIVED"
     SCREENING = "SCREENING"
     SCHEDULING = "SCHEDULING"
+    WAITING_FOR_INTERVIEW = "WAITING_FOR_INTERVIEW"
     INTERVIEWING = "INTERVIEWING"
     EVALUATION = "EVALUATION"
     HR_DEBRIEF = "HR_DEBRIEF"

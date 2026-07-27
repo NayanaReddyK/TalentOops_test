@@ -1,13 +1,16 @@
-"""Manager AI Debrief Agent: creates a Manager Google Meet link & debriefs HR in real time."""
+"""Manager AI Debrief Agent: creates a TalentOops In-Platform Debrief Room & debriefs HR in real time.
+
+Google Meet and Google Calendar have been removed. The debrief session now
+uses the self-hosted Interview Room system (app/rooms/) — same WebSocket-based
+agent pipeline, dedicated room URL, no external dependencies.
+"""
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from app.services.calendar_service import GoogleCalendarService
 from app.services.database import db
 from app.services.speech_engine import TTSService
-from app.services.vexa_client import get_vexa_client
 
 logger = logging.getLogger("talentops.manager_debrief")
 
@@ -48,7 +51,7 @@ def build_manager_debrief_script(run_id: str, final_state: dict[str, Any]) -> st
         f"Hello! I am your Manager AI Agent. Here is the executive debrief for your hiring run {run_id[:8]}.\n\n"
         f"1. **Candidate Resume Ingestion & Embedding**: We processed {count_str}, extracted profile skills and experience, and generated candidate vector embeddings for interview context.\n"
         f"2. **Rubric Alignment**: Established frozen evaluation rubric for role goal: '{goal}'.\n"
-        f"3. **Candidate Interview Outcome**: The Interviewer & Evaluator agents conducted the live oral Google Meet interview. Verbatim evidence quotes were continuously recorded and validated.\n"
+        f"3. **Candidate Interview Outcome**: The Interviewer & Evaluator agents conducted the live in-platform interview. Verbatim evidence quotes were continuously recorded and validated.\n"
         f"4. **Final Decision & Accountability**: The recommended outcome for candidate '{top_cand}' is **{decision}**.\n\n"
         f"As the Manager Agent overseeing all sub-agents, I am accountable for this run and ready to explain what happened, walk through transcript quotes, or answer any questions regarding our decision."
     )
@@ -61,7 +64,7 @@ async def create_manager_debrief_session(
     run_id: str | None = None,
     final_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a dedicated Google Meet meeting link for HR Debrief and assemble knowledge context."""
+    """Create a self-hosted debrief room for HR and assemble knowledge context."""
     effective_id = interview_id or run_id or "iv-default"
 
     # 1. Fetch scorecard and candidate evaluation report from Supabase
@@ -76,65 +79,45 @@ async def create_manager_debrief_session(
         "final_recommendation": scorecard_data.get("final_recommendation", {
             "hiring_recommendation": (final_state or {}).get("report", {}).get("decision") or "Strong Hire",
             "overall_suitability_score": 88.0,
-            "executive_summary": "Strong technical candidate."
+            "executive_summary": "Strong technical candidate.",
         }),
         "behavioral_metrics": scorecard_data.get("behavioral_metrics", {
             "confidence_level": 0.88,
             "communication_clarity": 0.85,
         }),
-        "detailed_competencies": scorecard_data.get("detailed_competencies", []),
+        "detailed_competencies":       scorecard_data.get("detailed_competencies", []),
         "full_transcript_evaluations": scorecard_data.get("full_transcript_evaluations", []),
     }
 
-    # 2. Provision real Google Meet link via GoogleCalendarService API v3
-    try:
-        cal_service = GoogleCalendarService()
-        meeting = cal_service.create_interview_meeting(
-            summary=f"HR Debrief: Candidate {top_cand}",
-            start_iso="2026-07-27T11:00:00Z",
-            attendee_email="hr@talentops.ai",
-            duration_minutes=30,
-            description=f"Manager Agent Post-Interview HR Debrief for interview {effective_id}"
-        )
-        meet_link = meeting.get("meet_link") or f"https://meet.google.com/mgr-{effective_id[:8]}"
-    except Exception as e:
-        logger.warning("Google Calendar provisioning fallback for %s: %s", effective_id, e)
-        meet_link = f"https://meet.google.com/mgr-{effective_id[:8]}"
-
-    # 3. Deploy Manager AI bot to meeting via Vexa client
-    vexa = get_vexa_client()
-    try:
-        bot_result = await vexa.join_meeting(
-            meet_url=meet_link,
-            bot_name="Manager AI Debrief Agent",
-            voice_context="manager_debrief",
-            interview_id=f"debrief-{effective_id}",
-        )
-        bot_status = bot_result.get("status", "deployed")
-    except Exception as vexa_err:
-        logger.warning("Vexa bot service warning (%s): %s", vexa.base_url, vexa_err)
-        bot_status = f"Vexa service offline. Meet link created: {meet_link}"
+    # 2. Create a self-hosted debrief room (replaces Google Meet)
+    from app.rooms.room_manager import room_manager
+    debrief_interview_id = f"debrief-{effective_id}"
+    room = await room_manager.create_room(
+        candidate_id=top_cand,
+        interview_id=debrief_interview_id,
+        run_id=run_id or effective_id,
+        metadata={"session_type": "hr_debrief"},
+    )
+    room_url = room.room_url
 
     payload = {
-        "debrief_id": f"debrief-{effective_id}",
-        "interview_id": effective_id,
-        "candidate_id": top_cand,
-        "meet_link": meet_link,
-        "status": "Manager Agent Waiting",
-        "bot_status": bot_status,
-        "summary": f"HR Debrief Session ready for candidate {top_cand}.",
+        "debrief_id":       f"debrief-{effective_id}",
+        "interview_id":     effective_id,
+        "candidate_id":     top_cand,
+        "room_url":         room_url,     # was meet_link
+        "status":           "Manager Agent Waiting",
+        "summary":          f"HR Debrief Session ready for candidate {top_cand}.",
         "knowledge_context": knowledge_context,
     }
 
     # 3. Persist session to Supabase hr_debrief_sessions
-    try:
-        inserted = await db.insert("hr_debrief_sessions", payload)
-        payload["id"] = inserted.get("id", "db-mock")
-    except Exception as db_err:
-        logger.warning("Supabase insert warning for hr_debrief_sessions: %s", db_err)
-        payload["id"] = "db-fallback"
+    inserted = await db.insert("hr_debrief_sessions", payload)
+    payload["id"] = inserted.get("id") or f"debrief-{effective_id}"
 
-    logger.info("Manager Agent created HR Debrief session for interview %s (meet: %s)", effective_id, meet_link)
+    logger.info(
+        "Manager Agent created HR Debrief room for interview %s (room: %s)",
+        effective_id, room_url,
+    )
     return payload
 
 
@@ -145,7 +128,7 @@ async def process_hr_debrief_turn(interview_id: str, hr_question: str) -> dict[s
     kc = session_data.get("knowledge_context", {})
 
     turns = kc.get("full_transcript_evaluations", [])
-    rec = kc.get("final_recommendation", {})
+    rec   = kc.get("final_recommendation", {})
     comps = kc.get("detailed_competencies", [])
     metrics = kc.get("behavioral_metrics", {})
 
@@ -156,7 +139,7 @@ async def process_hr_debrief_turn(interview_id: str, hr_question: str) -> dict[s
     for t in turns:
         q_text = t.get("question", "")
         a_text = t.get("candidate_answer", "")
-        notes = t.get("evaluator_notes", "")
+        notes  = t.get("evaluator_notes", "")
         if any(word in (q_text + " " + a_text + " " + notes).lower() for word in q_lower.split() if len(word) > 3):
             matched_quotes.append((q_text, a_text, notes))
 
@@ -178,13 +161,11 @@ async def process_hr_debrief_turn(interview_id: str, hr_question: str) -> dict[s
             f"with a suitability score of {rec.get('overall_suitability_score', 88.0)}%. {rec.get('executive_summary', '')}"
         )
     else:
-        # Check if query matches any evaluated competency explicitly
         matched_comp = [c for c in comps if c.get("competency_id", "").lower() in q_lower or any(kw.lower() in q_lower for kw in c.get("keywords", []))]
         if matched_comp:
             c = matched_comp[0]
             response_text = f"Regarding {c.get('competency_id', '').replace('_', ' ')}: candidate scored {c.get('technical_accuracy', 85)}% accuracy with strengths: {', '.join(c.get('strengths', ['Solid performance']))}."
         elif any(word in q_lower for word in ["tell me", "what about", "how about", "did they", "experience", "skill", "know", "use"]):
-            # Specific topic question not covered in stored transcript
             response_text = "Insufficient evidence in stored interview transcript for that topic."
         else:
             comp_summary = ", ".join([f"{c.get('competency_id')}: {c.get('technical_accuracy')}%" for c in comps[:2]])
@@ -194,16 +175,17 @@ async def process_hr_debrief_turn(interview_id: str, hr_question: str) -> dict[s
             )
 
     # Synthesize spoken audio for Manager Agent
-    tts = TTSService()
+    from app.config import get_settings as _get_settings
+    tts = TTSService(provider=_get_settings().tts_provider)
     audio_b64 = await tts.synthesize_speech_b64(response_text)
 
     return {
         "interview_id": interview_id,
-        "hr_question": hr_question,
+        "hr_question":  hr_question,
         "response_text": response_text,
-        "audio_b64": audio_b64,
+        "audio_b64":    audio_b64,
         "knowledge_context_ref": {
-            "candidate_id": kc.get("candidate_id"),
+            "candidate_id":      kc.get("candidate_id"),
             "suitability_score": rec.get("overall_suitability_score"),
         },
     }

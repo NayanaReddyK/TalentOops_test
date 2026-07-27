@@ -1,4 +1,8 @@
-"""Communication capability: candidate-facing emails."""
+"""Communication capability: candidate-facing emails.
+
+Email invitations now include a TalentOops Interview Room URL
+instead of a Google Meet link.
+"""
 from __future__ import annotations
 
 import logging
@@ -10,14 +14,23 @@ from app.supabase_client import log_event
 logger = logging.getLogger("talentops.communication")
 
 
-def _invite_body(candidate: str, slot: str, meet_link: str | None = None) -> tuple[str, str]:
+def _invite_body(
+    candidate: str,
+    slot: str,
+    room_url: str | None = None,
+) -> tuple[str, str]:
     subject = "Interview invitation — next steps"
-    meet_info = f"Google Meet Link: {meet_link}\n" if meet_link else ""
+    room_info = (
+        f"TalentOops Interview Room: {room_url}\n"
+        f"Simply click the link above at your scheduled time — no external software required.\n"
+        if room_url
+        else ""
+    )
     body = (
         f"Hi {candidate},\n\n"
         f"Thank you for your application. We'd like to invite you to an interview.\n"
-        f"Proposed time: {slot}.\n"
-        f"{meet_info}\n"
+        f"Proposed time: {slot}.\n\n"
+        f"{room_info}"
         f"This session will be recorded for evaluation; consent will be confirmed "
         f"at the start of the call.\n\n"
         f"Best regards,\nThe Hiring Team"
@@ -54,10 +67,18 @@ def _address_for(candidate: str, candidate_email: str | None = None) -> str:
         return candidate_email
     if "@" in candidate:
         return candidate
-    return f"{candidate}@example.com"
+    safe_name = candidate.lower().replace(" ", ".")
+    return f"{safe_name}@example.com"
 
 
-def _send(run_id: str, kind: str, candidate: str, subject: str, body: str, candidate_email: str | None = None) -> dict[str, Any]:
+def _send(
+    run_id: str,
+    kind: str,
+    candidate: str,
+    subject: str,
+    body: str,
+    candidate_email: str | None = None,
+) -> dict[str, Any]:
     client = get_email_client()
     target_address = _address_for(candidate, candidate_email)
     msg = client.send(to=target_address, subject=subject, body=body)
@@ -74,8 +95,15 @@ def _send(run_id: str, kind: str, candidate: str, subject: str, body: str, candi
     return {"kind": kind, "to": msg.to, "message_id": msg.message_id, "subject": subject}
 
 
-def send_invite(run_id: str, candidate: str, slot: str, meet_link: str | None = None, candidate_email: str | None = None) -> dict[str, Any]:
-    subject, body = _invite_body(candidate, slot, meet_link)
+def send_invite(
+    run_id: str,
+    candidate: str,
+    slot: str,
+    room_url: str | None = None,
+    candidate_email: str | None = None,
+) -> dict[str, Any]:
+    """Send an interview invitation email with a TalentOops room URL."""
+    subject, body = _invite_body(candidate, slot, room_url)
     return _send(run_id, "invite", candidate, subject, body, candidate_email)
 
 

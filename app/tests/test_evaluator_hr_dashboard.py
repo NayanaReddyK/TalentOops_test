@@ -13,7 +13,9 @@ client = TestClient(app)
 
 
 @pytest.mark.asyncio
-async def test_evaluator_agent_comprehensive_evaluation():
+@patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384)
+@patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384])
+async def test_evaluator_agent_comprehensive_evaluation(mock_embed_batch, mock_embed):
     agent = EvaluatorAgent(run_id="test-run")
 
     transcript_turns = [

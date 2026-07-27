@@ -1,110 +1,126 @@
 import React, { useState } from 'react';
-import { Rocket, Loader2, LogOut } from 'lucide-react';
+import { Rocket, Loader2, PhoneOff, Copy, ExternalLink } from 'lucide-react';
+
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
 export default function DeployBot({ roleId, candidateId, interviewId, onDeployed }) {
-  const [meetUrl, setMeetUrl] = useState('');
-  const [activeMeetUrl, setActiveMeetUrl] = useState('');
-  const [deploying, setDeploying] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  const [error, setError] = useState(null);
+  const [roomId,    setRoomId]    = useState('');
+  const [roomUrl,   setRoomUrl]   = useState('');
+  const [creating,  setCreating]  = useState(false);
+  const [ending,    setEnding]    = useState(false);
+  const [copied,    setCopied]    = useState(false);
+  const [error,     setError]     = useState(null);
 
-  const handleStop = async () => {
-    const targetUrl = activeMeetUrl || meetUrl;
-    if (!targetUrl) {
-      setError('Enter a Meet URL to stop the bot.');
-      return;
-    }
-    setStopping(true);
+  const handleCreate = async () => {
+    setCreating(true);
     setError(null);
     try {
-      const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
-      const res = await fetch(`${apiBase}/interviews/stop_by_url`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ meet_url: targetUrl })
-      });
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(`Failed to stop bot: ${errorData.detail || res.statusText}`);
-      }
-      if (activeMeetUrl) setActiveMeetUrl('');
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setStopping(false);
-    }
-  };
-
-  const handleDeploy = async () => {
-    if (!meetUrl) {
-      setError('Meet URL is required');
-      return;
-    }
-
-    setDeploying(true);
-    setError(null);
-
-    try {
-      const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
-      const res = await fetch(`${apiBase}/interviews/deploy`, {
+      const res = await fetch(`${API_BASE}/interviews/deploy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          meet_url: meetUrl,
           candidate_id: candidateId,
-          role_id: roleId,
-          interview_id: interviewId
-        })
+          role_id:      roleId,
+          interview_id: interviewId || undefined,
+        }),
       });
-
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        const message = errorData.detail || res.statusText;
-        throw new Error(`Failed to deploy bot: ${message}`);
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || res.statusText);
       }
-
       const data = await res.json();
-      if (data.interview_id && onDeployed) {
-        onDeployed(data.interview_id);
-      }
-      setActiveMeetUrl(meetUrl);
-      setMeetUrl('');
+      setRoomId(data.room_id);
+      setRoomUrl(data.room_url);
+      if (data.interview_id && onDeployed) onDeployed(data.interview_id);
     } catch (err) {
       setError(err.message);
     } finally {
-      setDeploying(false);
+      setCreating(false);
     }
   };
 
+  const handleEnd = async () => {
+    setEnding(true);
+    setError(null);
+    try {
+      await fetch(`${API_BASE}/rooms/${roomId}/end`, { method: 'POST' });
+      setRoomId('');
+      setRoomUrl('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setEnding(false);
+    }
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(roomUrl).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+
   return (
-    <div className="flex items-center gap-2">
-      <input 
-        type="text" 
-        value={meetUrl} 
-        onChange={(e) => setMeetUrl(e.target.value)} 
-        placeholder="https://meet.google.com/xyz"
-        className="bg-[var(--color-glass-base)] border border-[var(--color-glass-border)] rounded-md px-4 py-2 font-mono text-sm focus:outline-none focus:border-cyan-500 w-64"
-        disabled={deploying}
-      />
-      <button 
-        onClick={handleDeploy}
-        disabled={deploying || !meetUrl}
-        className="flex items-center gap-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white px-4 py-2 rounded-md font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_0_15px_rgba(6,182,212,0.4)]"
-      >
-        {deploying ? <Loader2 size={16} className="animate-spin" /> : <Rocket size={16} />}
-        Deploy Bot
-      </button>
-      
-      {(activeMeetUrl || meetUrl) && (
-        <button 
-          onClick={handleStop}
-          disabled={stopping}
-          className="flex items-center gap-2 bg-[var(--color-glass-base)] border border-rose-500/50 hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-md font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          title="End Interview and Kick Bot"
+    <div className="flex items-center gap-2 flex-wrap">
+      {!roomId ? (
+        <button
+          id="btn-create-room"
+          onClick={handleCreate}
+          disabled={creating}
+          className="flex items-center gap-2 bg-gradient-to-r from-cyan-600 to-cyan-500
+                     hover:from-cyan-500 hover:to-cyan-400 text-white px-4 py-2 rounded-md
+                     font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed
+                     shadow-[0_0_15px_rgba(6,182,212,0.4)]"
         >
-          {stopping ? <Loader2 size={16} className="animate-spin" /> : <LogOut size={16} />}
-          End
+          {creating ? <Loader2 size={16} className="animate-spin" /> : <Rocket size={16} />}
+          Create Interview Room
         </button>
+      ) : (
+        <>
+          {/* room URL chip */}
+          <span className="bg-[var(--color-glass-base)] border border-[var(--color-glass-border)]
+                           rounded-md px-3 py-1.5 font-mono text-xs text-cyan-300 truncate max-w-[220px]"
+                title={roomUrl}>
+            {roomUrl}
+          </span>
+
+          {/* copy */}
+          <button
+            id="btn-copy-room-url"
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 bg-white/10 hover:bg-white/15 border border-white/15
+                       text-slate-300 px-3 py-2 rounded-md text-sm transition-all"
+            title="Copy room URL"
+          >
+            <Copy size={14} />
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+
+          {/* open */}
+          <a
+            id="btn-open-room"
+            href={roomUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 bg-cyan-600/20 border border-cyan-500/30
+                       text-cyan-300 hover:bg-cyan-500/30 px-3 py-2 rounded-md text-sm transition-all"
+          >
+            <ExternalLink size={14} /> Open
+          </a>
+
+          {/* end */}
+          <button
+            id="btn-end-room"
+            onClick={handleEnd}
+            disabled={ending}
+            className="flex items-center gap-2 bg-[var(--color-glass-base)] border border-rose-500/50
+                       hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-md font-medium
+                       transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            title="End Interview Room"
+          >
+            {ending ? <Loader2 size={16} className="animate-spin" /> : <PhoneOff size={16} />}
+            End
+          </button>
+        </>
       )}
       {error && <span className="text-rose-500 text-sm ml-2">{error}</span>}
     </div>

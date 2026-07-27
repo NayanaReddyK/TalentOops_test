@@ -55,11 +55,19 @@ def generate_rubric(run_id: str, standard: str) -> Rubric:
     )
 
     names = result.get("competencies") or ["technical", "communication", "problem-solving"]
-    weight = round(1.0 / len(names), 4)
-    competencies = [
-        Competency(name=n, description=f"Assess candidate on: {n}", weight=weight)
-        for n in names
-    ]
+    competencies = []
+    
+    if names and all(isinstance(n, dict) for n in names):
+        for n in names:
+            name = n.get("name", "Unknown")
+            description = n.get("description", f"Assess candidate on: {name}")
+            weight = n.get("weight", round(1.0 / len(names), 4))
+            competencies.append(Competency(name=name, description=description, weight=weight))
+    else:
+        weight = round(1.0 / len(names), 4) if names else 1.0
+        for n in names:
+            name = n if isinstance(n, str) else str(n)
+            competencies.append(Competency(name=name, description=f"Assess candidate on: {name}", weight=weight))
     rubric = Rubric(run_id=run_id, standard=standard, competencies=competencies)
     return rubric.frozen()
 

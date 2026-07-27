@@ -37,8 +37,8 @@ async def test_create_manager_debrief_session():
     mock_db_insert = {"id": "debrief-uuid-123"}
     with patch("app.services.database.db.query", new_callable=AsyncMock, return_value=mock_scorecard), \
          patch("app.services.database.db.insert", new_callable=AsyncMock, return_value=mock_db_insert), \
+         patch("app.services.vexa_client.VexaClient.join_meeting", new_callable=AsyncMock, return_value={"meeting_id": "meet", "status": "joined"}), \
          patch("app.services.calendar_service.GoogleCalendarService.create_interview_meeting", return_value={"meet_link": "https://meet.google.com/abc-defg-hij"}):
-
         res = await create_manager_debrief_session(
             interview_id="iv-alex-99",
             candidate_id="c-alex"
@@ -83,7 +83,9 @@ async def test_process_hr_debrief_turn():
         }
     ]
 
-    with patch("app.services.database.db.query", new_callable=AsyncMock, return_value=mock_session):
+    with patch("app.services.database.db.query", new_callable=AsyncMock, return_value=mock_session), \
+         patch("app.services.speech_engine.TTSService.synthesize_speech_b64",
+               new_callable=AsyncMock, return_value="bW9jayBhdWRpbyBvdXRwdXQ="):
         res = await process_hr_debrief_turn(
             interview_id="iv-alex-99",
             hr_question="Why did they get a high recommendation on database architecture?"

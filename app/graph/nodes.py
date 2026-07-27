@@ -9,10 +9,9 @@ from app.agents.communication import send_invite
 from app.agents.interviewer import run_interview
 from app.agents.reporting import run_reporting
 from app.agents.scheduling import run_scheduling
-from app.agents.screening import run_screening
 from app.agents.sourcing import run_sourcing
 from app.graph.envelope import make_envelope
-from app.graph.state import SUB_AGENTS, PipelineState
+from app.graph.state import PipelineState
 from app.rubric.rubric import Rubric, generate_rubric
 from app.supabase_client import log_event
 
@@ -54,8 +53,11 @@ def sourcing_node(state: PipelineState) -> dict:
                        "competencies": [c.name for c in rubric.competencies]})
 
     candidates = result.get("candidates", [])
-    top = candidates[0]["id"] if candidates else "Priya Rao"
-    shortlist = [{"ref_id": c.get("id", "cand"), "similarity": 1.0, "coverage_rate": 1.0} for c in candidates] if candidates else [{"ref_id": top, "similarity": 1.0, "coverage_rate": 1.0}]
+    if not candidates:
+        raise ValueError("No valid candidate resume profiles found in corpus")
+
+    top = candidates[0]["id"]
+    shortlist = [{"ref_id": c.get("id", "cand"), "similarity": 1.0, "coverage_rate": 1.0} for c in candidates]
 
     env = _emit(run_id, "sourcing", {"count": result["count"]})
     return {
@@ -81,7 +83,10 @@ def screening_node(state: PipelineState) -> dict:
                        "competencies": [c.name for c in rubric.competencies]})
 
     candidates = state.get("candidates", [])
-    top = state.get("top_candidate") or (candidates[0]["id"] if candidates else "Priya Rao")
+    top = state.get("top_candidate") or (candidates[0]["id"] if candidates else None)
+    if not top:
+        raise ValueError("No candidates available for screening")
+
     shortlist = state.get("shortlist") or [{"ref_id": top, "similarity": 1.0, "coverage_rate": 1.0}]
     result = {
         "shortlist": shortlist,
@@ -103,19 +108,51 @@ def screening_node(state: PipelineState) -> dict:
     }
 
 
-def scheduling_node(state: PipelineState) -> dict:
+async def scheduling_node(state: PipelineState) -> dict:
     from app.graph.state import WorkflowStage
+    from app.services.database import db
     run_id = state["run_id"]
     log_event(run_id, source="scheduling", event_type="agent_started", payload={})
-    result = run_scheduling(run_id, state.get("top_candidate"))
+    
+    top = state.get("top_candidate")
+    if not top:
+        raise ValueError("No top candidate selected for scheduling")
 
-    if result.get("status") == "booked" and state.get("top_candidate"):
-        meet_link = result["booking"].get("meet_link")
-        invite = send_invite(run_id, state["top_candidate"], result["booking"]["start"], meet_link=meet_link)
+    candidate_email = None
+    if state.get("candidates"):
+        for c in state["candidates"]:
+            if c.get("id") == top or (isinstance(c.get("id"), str) and c.get("id") in str(top)):
+                candidate_email = c.get("email") or (c.get("profile") or {}).get("email")
+                break
+
+    if not candidate_email:
+        db_cands = await db.query("candidates", id=top)
+        if db_cands:
+            candidate_email = db_cands[0].get("email") or db_cands[0].get("resume_email")
+
+    if not candidate_email or "@" not in candidate_email:
+        raise ValueError("Candidate email not found in database")
+                
+    result = await run_scheduling(run_id, top, candidate_email=candidate_email)
+
+    if result.get("status") == "booked" and top:
+        room_url = result.get("room_url")
+        invite = send_invite(
+            run_id=run_id, 
+            candidate=top, 
+            slot="Upcoming", 
+            room_url=room_url,
+            candidate_email=candidate_email
+        )
         result["invite_email"] = invite
 
     env = _emit(run_id, "scheduling", result)
-    return {"stage": WorkflowStage.INTERVIEWING, "completed": ["scheduling"], "results": {"scheduling": result}, "messages": [env]}
+    return {
+        "stage": WorkflowStage.WAITING_FOR_INTERVIEW,
+        "completed": ["scheduling"],
+        "results": {"scheduling": result},
+        "messages": [env],
+    }
 
 
 def interviewer_node(state: PipelineState) -> dict:

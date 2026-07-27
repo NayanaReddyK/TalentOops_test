@@ -88,7 +88,11 @@ def determine_next_stage(current_stage: str | None, completed: list[str]) -> tup
     if current_stage == WorkflowStage.SCHEDULING:
         if "scheduling" not in completed:
             return WorkflowStage.SCHEDULING, "scheduling"
-        return WorkflowStage.INTERVIEWING, "interviewer"
+        # Halt execution. Await candidate joining the in-platform WebRTC interview room.
+        return WorkflowStage.WAITING_FOR_INTERVIEW, "FINISH"
+
+    if current_stage == WorkflowStage.WAITING_FOR_INTERVIEW:
+        return WorkflowStage.WAITING_FOR_INTERVIEW, "FINISH"
 
     if current_stage == WorkflowStage.INTERVIEWING:
         if "interviewer" not in completed:

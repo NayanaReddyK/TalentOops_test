@@ -65,7 +65,10 @@ async def ws_endpoint(websocket, meeting_id: str) -> None:
     call_meta = await chain.open_call()
     chain.acknowledge_consent()
     
-    # Start a mock session to stream the transcript
+    # Start a GeminiLiveSession in script mode for onboarding/connection-check flow.
+    # Script mode is used here deliberately: this is the WebSocket audio bridge endpoint
+    # which handles the pre-interview connection check sequence, not the main interview.
+    # The real Gemini Live API session is started by MultiAgentCoordinator after consent.
     session = GeminiLiveSession(session=voice_session, interview_id=meeting_id, script=[
         call_meta["announcement"],
         "Hi! Before we start, this is a quick non-graded mic and connection check.",

@@ -1,35 +1,65 @@
-"""Scheduling sub-agent: book an interview slot for the top candidate."""
+"""Scheduling sub-agent: create a self-hosted TalentOops interview room for the top candidate.
+
+Replaces the previous Google Calendar / Google Meet booking flow.
+Room creation is handled by app.rooms.room_manager.
+"""
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from app.agents.calendar_client import get_calendar_client
+from app.services.database import db
 
 logger = logging.getLogger("talentops.scheduling")
 
 
-def run_scheduling(run_id: str, top_candidate: str | None, candidate_email: str | None = None, duration_min: int = 45) -> dict[str, Any]:
-    client = get_calendar_client()
-    slots = client.find_slots(duration_min=duration_min, count=3)
+async def run_scheduling(
+    run_id: str,
+    top_candidate: str | None,
+    candidate_email: str | None = None,
+    duration_min: int = 45,
+) -> dict[str, Any]:
+    """Create an interview room for the top candidate and return room details."""
+    if not top_candidate:
+        raise ValueError("No top candidate provided for scheduling")
 
-    if not top_candidate or not slots:
-        return {"status": "no_booking", "slots": slots, "top_candidate": top_candidate}
+    # Resolve candidate_id — use the slug form of the candidate name
+    candidate_id = top_candidate.lower().replace(" ", "-")
 
+    # Resolve candidate email if not provided
     resolved_email = candidate_email
-    if not resolved_email and top_candidate:
-        try:
-            from app.services.database import db
-            candidates = db.query_sync("candidates", name=top_candidate) if hasattr(db, "query_sync") else []
-            if candidates and candidates[0].get("email"):
-                resolved_email = candidates[0]["email"]
-        except Exception:
-            pass
+    if not resolved_email or "@" not in resolved_email:
+        candidates = await db.query("candidates", id=top_candidate)
+        if not candidates:
+            candidates = await db.query("candidates", id=candidate_id)
+        if candidates:
+            resolved_email = candidates[0].get("email") or candidates[0].get("resume_email")
 
-    attendee = resolved_email if (resolved_email and "@" in resolved_email) else f"{top_candidate.lower().replace(' ', '.')}@example.com"
-    booking = client.book(
-        slot_iso=slots[0],
-        attendee=attendee,
-        summary=f"TalentOps interview — {top_candidate}",
+    if not resolved_email or "@" not in resolved_email:
+        logger.error("Candidate email not found in database for candidate: %s", top_candidate)
+        raise ValueError("Candidate email not found in database")
+
+    from app.rooms.room_manager import room_manager
+
+    interview_id = f"iv-{candidate_id}-{run_id[:8]}"
+
+    room = await room_manager.create_room(
+        candidate_id=candidate_id,
+        interview_id=interview_id,
+        run_id=run_id,
+        metadata={"duration_min": duration_min, "candidate_email": resolved_email},
     )
-    return {"status": "booked", "offered_slots": slots, "booking": booking}
+
+    logger.info(
+        "Interview room created for candidate %s: %s",
+        top_candidate, room.room_url,
+    )
+
+    return {
+        "status": "booked",
+        "candidate_id": candidate_id,
+        "candidate_email": resolved_email,
+        "interview_id": interview_id,
+        "room_id": room.room_id,
+        "room_url": room.room_url,
+    }

@@ -1,84 +1,143 @@
+"""Interview Routes — self-hosted room lifecycle replaces Vexa/Google Meet."""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import uuid
 
-from app.services.vexa_client import VexaClient
+from app.rooms.room_manager import room_manager
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
-vexa_client = VexaClient()
+
 
 class DeployBotRequest(BaseModel):
-    meet_url: str
+    """Create or join an in-platform interview room."""
+    room_id: str | None = None          # Optional: join an existing room
     candidate_id: str
     role_id: str
     interview_id: str | None = None
 
+
 @router.post("/deploy")
 async def deploy_bot(req: DeployBotRequest):
     """
-    Step 2: The Command Code (Python)
-    Shoots a laser-fast command to Vexa to deploy the bot into the meeting.
+    Create a self-hosted interview room and insert the interview record.
+
+    Replaces the old Vexa bot deployment flow. The 'room' IS the interview;
+    agents connect directly via WebSocket, no external bot proxy needed.
     """
     try:
-        # Resolve the interview ID before calling Vexa so we can pass it
         interview_id = req.interview_id or uuid.uuid4().hex
-        
-        # We deploy the bot under the "candidate" voice context, as this is an interview.
-        result = await vexa_client.join_meeting(
-            meet_url=req.meet_url,
-            bot_name="TalentOps Interviewer",
-            voice_context="candidate",
-            interview_id=interview_id
-        )
-        
-        # Insert the interview into the database (ignore if it already exists)
+
+        # If a room_id was provided, validate it exists
+        if req.room_id:
+            room = room_manager.get_room(req.room_id)
+            if room is None:
+                raise HTTPException(status_code=404, detail=f"Room {req.room_id!r} not found")
+            room_id = req.room_id
+            room_url = room.room_url
+        else:
+            # Create a new room for this interview
+            room = await room_manager.create_room(
+                candidate_id=req.candidate_id,
+                interview_id=interview_id,
+                metadata={"role_id": req.role_id},
+            )
+            room_id = room.room_id
+            room_url = room.room_url
+
+        # Insert the interview record in DB if not already present
         from app.services.database import db
-        insert_result = await db.insert("interviews", {
-            "id": interview_id,
-            "candidate_id": req.candidate_id,
-            "role_id": req.role_id,
-            "transcript": []
-        })
-        
-        # If insert_result is empty, it means RLS blocked it or a duplicate key error occurred.
-        # This is fine; it means the row already exists or RLS is improperly configured.
+        try:
+            existing = await db.query("interviews", id=interview_id)
+            if not existing:
+                await db.insert("interviews", {
+                    "id":           interview_id,
+                    "candidate_id": req.candidate_id,
+                    "role_id":      req.role_id,
+                    "transcript":   [],
+                })
+        except Exception:
+            pass
 
         return {
-            "status": "success",
-            "message": "Bot deployed successfully!",
-            "vexa_response": result,
-            "interview_id": interview_id
+            "status":       "success",
+            "message":      "Interview room is ready!",
+            "interview_id": interview_id,
+            "room_id":      room_id,
+            "room_url":     room_url,
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        import httpx
-        if isinstance(e, httpx.HTTPStatusError):
-            raise HTTPException(status_code=e.response.status_code, detail=f"Vexa API error: {e.response.text}")
-        raise HTTPException(status_code=500, detail=f"Failed to deploy Vexa bot: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create interview room: {str(e)}")
 
-class StopBotRequest(BaseModel):
-    meet_url: str
 
-@router.post("/stop_by_url")
-async def stop_bot_by_url(req: StopBotRequest):
+class EndRoomRequest(BaseModel):
+    room_id: str
+
+
+@router.post("/end_room")
+async def end_room(req: EndRoomRequest):
     """
-    Commands the bot to leave the meeting using the Google Meet URL.
-    This is especially useful for kicking zombie bots.
+    Close an interview room session (replaces stop_by_url which used Vexa).
+    Idempotent — returns success even if room is already closed.
     """
     try:
-        # Extract the native meeting ID (e.g., qsk-svbr-wwd) from the URL
-        native_meeting_id = req.meet_url.split("/")[-1].split("?")[0]
-        
-        # Vexa allows deleting by platform/native_meeting_id
-        result = await vexa_client.leave_meeting(f"google_meet/{native_meeting_id}")
+        room = room_manager.get_room(req.room_id)
+        if room is None:
+            return {"status": "success", "message": "Room already closed or does not exist."}
+        await room_manager.close_room(req.room_id)
         return {
-            "status": "success",
-            "message": "Bot left the meeting successfully!",
-            "vexa_response": result
+            "status":  "success",
+            "message": "Interview room closed.",
+            "room_id": req.room_id,
         }
     except Exception as e:
-        import httpx
-        if isinstance(e, httpx.HTTPStatusError):
-            if e.response.status_code == 404:
-                return {"status": "success", "message": "Bot is already gone from the meeting."}
-            raise HTTPException(status_code=e.response.status_code, detail=f"Vexa API error: {e.response.text}")
-        raise HTTPException(status_code=500, detail=f"Failed to stop Vexa bot: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to close room: {str(e)}")
+
+
+class CompleteInterviewRequest(BaseModel):
+    candidate_turns: list[str] | None = None
+
+
+@router.post("/{room_id}/complete")
+async def complete_interview(room_id: str, req: CompleteInterviewRequest | None = None):
+    """
+    Complete WebRTC interview session and trigger evaluation & reporting asynchronously.
+    """
+    room = room_manager.get_room(room_id)
+    if not room:
+        raise HTTPException(status_code=404, detail=f"Interview room {room_id!r} not found or already closed.")
+
+    from app.rooms.signaling import _run_agent_pipeline
+    from app.agents.reporting import run_reporting
+    import asyncio
+
+    candidate_turns = (req.candidate_turns if req else None) or ["Candidate completed WebRTC interview session."]
+    run_id = room.run_id or f"run-room-{room_id[:8]}"
+    role_id = room.metadata.get("role_id", "r-default")
+
+    result = await _run_agent_pipeline(
+        room_id=room_id,
+        interview_id=room.interview_id,
+        candidate_id=room.candidate_id,
+        role_id=role_id,
+        consent_response="Yes, consent granted.",
+        candidate_turns=candidate_turns,
+        run_id=run_id,
+    )
+
+    if result.get("status") == "completed":
+        scorecard = result.get("scorecard", {})
+        needs_review = scorecard.get("scorecard", {}).get("needs_human_review", False)
+        state = {
+            "shortlist": [{"ref_id": room.candidate_id}],
+            "top_candidate": room.candidate_id,
+            "results": {"interview": scorecard},
+            "needs_review": needs_review,
+            "goal": "Candidate Interview Outcomes"
+        }
+        reporting_result = await asyncio.to_thread(run_reporting, run_id, state)
+        result["reporting_result"] = reporting_result
+
+    await room_manager.close_room(room_id)
+    return {"status": "success", "room_id": room_id, "result": result}

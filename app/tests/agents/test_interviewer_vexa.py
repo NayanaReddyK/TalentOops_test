@@ -1,11 +1,10 @@
-"""TDD unit tests for Phase 3 Headless Vexa Interviewer & Audio Streaming Integration."""
+"""TDD unit tests for Interviewer FSM and self-hosted room integration."""
 import pytest
 from unittest.mock import AsyncMock, patch
 from app.agents.interviewer import run_interview
 from app.agents.interviewer_fsm import InterviewerFSM, InterviewState
 from app.rubric.rubric import Rubric, Competency
 from app.graph.nodes import interviewer_node
-from app.services.vexa_client import VexaClient
 
 
 @pytest.fixture
@@ -43,17 +42,16 @@ def test_interviewer_fsm_8_stage_lifecycle(mock_rubric):
     assert fsm.state == InterviewState.POST_CALL
 
 
-def test_run_interview_vexa_integration(mock_rubric):
-    with patch.object(VexaClient, "join_meeting", new_callable=AsyncMock) as mock_join:
-        mock_join.return_value = {"meeting_id": "vexa-session-1", "status": "joined"}
-        res = run_interview("run-201", mock_rubric, "Priya Rao", meet_link="https://meet.google.com/test-meet")
-        assert res["candidate"] == "Priya Rao"
-        assert "interview_id" in res
-        assert res["overall_score"] > 0
-        assert mock_join.called
+def test_run_interview_room_integration(mock_rubric):
+    """run_interview with a room_id should not call any Vexa / Google Meet API."""
+    res = run_interview("run-201", mock_rubric, "Priya Rao", meet_link=None)
+    assert res["candidate"] == "Priya Rao"
+    assert "interview_id" in res
+    assert res["overall_score"] > 0
 
 
-def test_interviewer_node_envelope_output(mock_rubric):
+@patch("app.supabase_client._insert_sync")
+def test_interviewer_node_envelope_output(mock_insert_sync, mock_rubric):
     state = {
         "run_id": "run-202",
         "top_candidate": "Priya Rao",

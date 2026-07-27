@@ -105,7 +105,7 @@ class ConsentAgent:
 
     def get_disclosure_script(self, candidate_name: str = "Candidate") -> str:
         return (
-            f"Hello {candidate_name}, welcome to your TalentOps interview! "
+            f"Hello {candidate_name}, welcome to your TalentOops interview! "
             f"Before we begin, please note that this technical session will be recorded "
             f"and evaluated by our AI system for objective scoring. "
             f"Do you explicitly consent to proceeding with the recorded interview?"
@@ -115,7 +115,7 @@ class ConsentAgent:
         self,
         candidate_id: str,
         response_text: str,
-        meet_link: str,
+        room_id: str,           # replaced meet_link
         run_id: str = "run-manual",
     ) -> dict[str, Any]:
         """Process response, log consent event to Supabase, and return consent state."""
@@ -125,13 +125,13 @@ class ConsentAgent:
 
         timestamp_iso = datetime.now(timezone.utc).isoformat()
         payload = {
-            "candidate_id": candidate_id,
-            "meet_link": meet_link,
-            "consent_status": "granted" if granted else "denied",
+            "candidate_id":    candidate_id,
+            "room_id":         room_id,          # was meet_link
+            "consent_status":  "granted" if granted else "denied",
             "candidate_response": response_text,
             "confidence_score": eval_result.confidence_score,
-            "reasoning": eval_result.reasoning,
-            "timestamp": timestamp_iso,
+            "reasoning":       eval_result.reasoning,
+            "timestamp":       timestamp_iso,
         }
 
         # Log event to Supabase events table
@@ -148,12 +148,12 @@ class ConsentAgent:
         )
 
         return {
-            "candidate_id": candidate_id,
+            "candidate_id":    candidate_id,
             "consent_granted": granted,
             "confidence_score": eval_result.confidence_score,
-            "reasoning": eval_result.reasoning,
-            "status": status_str,
-            "meet_link": meet_link,
-            "timestamp": timestamp_iso,
-            "payload": payload,
+            "reasoning":       eval_result.reasoning,
+            "status":          status_str,
+            "room_id":         room_id,          # was meet_link
+            "timestamp":       timestamp_iso,
+            "payload":         payload,
         }

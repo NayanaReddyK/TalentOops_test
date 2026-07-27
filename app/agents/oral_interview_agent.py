@@ -32,8 +32,10 @@ class OralInterviewAgent:
     """Oral speech-based interview agent conducting turn-taking Q&A with real-time Supabase persistence."""
 
     def __init__(self):
-        self.stt = STTService()
-        self.tts = TTSService()
+        from app.config import get_settings
+        _settings = get_settings()
+        self.stt = STTService(provider=_settings.stt_provider)
+        self.tts = TTSService(provider=_settings.tts_provider)
 
     async def process_turn(
         self,
@@ -96,13 +98,9 @@ class OralInterviewAgent:
         }
 
         log_id = f"log-{session_id}-{question_number}"
-        try:
-            stored_log = await db.insert("interview_qa_logs", qa_log_payload)
-            if stored_log and isinstance(stored_log, dict) and stored_log.get("id"):
-                log_id = stored_log["id"]
-        except Exception as db_err:
-            logger.warning("Supabase interview_qa_logs insert warning for session %s: %s; fallback id: %s", session_id, db_err, log_id)
-
+        stored_log = await db.insert("interview_qa_logs", qa_log_payload)
+        if stored_log and isinstance(stored_log, dict) and stored_log.get("id"):
+            log_id = stored_log["id"]
         # 7. Audit log event
         log_event(
             run_id=run_id,

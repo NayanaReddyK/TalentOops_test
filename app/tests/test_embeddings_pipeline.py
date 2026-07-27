@@ -3,11 +3,21 @@ import pytest
 from unittest.mock import MagicMock, patch
 from app.config import get_settings
 from app.embeddings.embedder import (
-    MockEmbedder,
     RemoteEmbedder,
     get_embedder,
     retry_with_backoff,
 )
+
+
+class MockEmbedder:
+    def __init__(self, dim: int):
+        self.dim = dim
+
+    def embed(self, text: str) -> list[float]:
+        return [0.1] * self.dim
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [[0.1] * self.dim for _ in texts]
 
 
 def test_mock_embedder_dimension():

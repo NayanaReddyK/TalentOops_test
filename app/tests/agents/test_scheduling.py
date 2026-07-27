@@ -1,52 +1,81 @@
-"""TDD unit tests for Phase 2 Calendar, Scheduling & Google Meet Invitation module."""
+"""Integration tests for scheduling agent with self-hosted room creation."""
+from __future__ import annotations
+
 import pytest
-from app.agents.calendar_client import MockCalendarClient, get_calendar_client
-from app.agents.scheduling import run_scheduling
-from app.agents.communication import send_invite, get_email_client
-from app.graph.nodes import scheduling_node
 
 
-def test_mock_calendar_client_returns_meet_link():
-    client = MockCalendarClient()
-    slots = client.find_slots(duration_min=45, count=2)
-    assert len(slots) == 2
-    booking = client.book(slots[0], "alex@example.com", "Test Interview")
-    assert booking["status"] == "confirmed"
-    assert "meet_link" in booking
-    assert "meet.google.com" in booking["meet_link"]
+@pytest.fixture(autouse=True)
+def patch_room_manager(monkeypatch):
+    """Prevent actual room creation during tests."""
+    import uuid
+    from app.rooms import models as room_models
+
+    class _FakeRoom:
+        room_id  = str(uuid.uuid4())
+        room_url = f"http://localhost:8000/interview/{room_id}"
+        candidate_id = "c-test"
+        interview_id = "iv-test"
+        status   = room_models.RoomStatus.SCHEDULED
+        metadata = {}
+
+    class _FakeManager:
+        async def create_room(self, *, candidate_id, interview_id, run_id="run", metadata=None):
+            r = _FakeRoom()
+            r.candidate_id = candidate_id
+            r.interview_id = interview_id
+            return r
+
+    import app.agents.scheduling as sched_mod
+    monkeypatch.setattr(sched_mod, "room_manager", _FakeManager(), raising=False)
 
 
-def test_run_scheduling_with_meet_link():
-    res = run_scheduling("run-101", top_candidate="Alex Chen", candidate_email="alex.chen@example.com")
-    assert res["status"] == "booked"
-    assert "booking" in res
-    assert "meet_link" in res["booking"]
-    assert res["booking"]["attendee"] == "alex.chen@example.com"
+class TestSchedulingAgent:
+    def test_no_candidate_returns_no_booking(self):
+        from app.agents.scheduling import run_scheduling
+        result = run_scheduling(run_id="run-001", top_candidate=None)
+        assert result["status"] == "no_booking"
 
+    def test_returns_room_url(self, monkeypatch):
+        """Scheduling with a real candidate should return a room URL."""
+        from app.agents.scheduling import run_scheduling
 
-def test_send_invite_includes_meet_link():
-    email_client = get_email_client()
-    initial_count = len(email_client.outbox)
-    res = send_invite("run-102", "Priya Rao", "2026-07-26T14:00:00Z", "https://meet.google.com/test-meet-123", "priya@example.com")
-    assert res["kind"] == "invite"
-    assert res["to"] == "priya@example.com"
-    assert len(email_client.outbox) == initial_count + 1
-    last_msg = email_client.outbox[-1]
-    assert "https://meet.google.com/test-meet-123" in last_msg.body
+        # Patch asyncio.run / get_event_loop to return a fake room
+        import uuid
+        fake_room_id = str(uuid.uuid4())
 
+        class FakeRoom:
+            room_id  = fake_room_id
+            room_url = f"http://localhost:8000/interview/{fake_room_id}"
 
-def test_scheduling_node_emits_stage_and_envelope():
-    state = {
-        "run_id": "run-103",
-        "top_candidate": "Priya Rao",
-        "completed": ["screening"],
-        "messages": [],
-    }
-    result_state = scheduling_node(state)
-    assert result_state["stage"] == "INTERVIEWING"
-    assert "scheduling" in result_state["completed"]
-    assert len(result_state["messages"]) == 1
-    env = result_state["messages"][0]
-    assert env["sender"] == "scheduling"
-    assert env["recipient"] == "manager"
-    assert env["body"]["booking"]["meet_link"] != ""
+        async def _fake_create(*args, **kwargs):
+            return FakeRoom()
+
+        import app.rooms.room_manager as rm_mod
+        monkeypatch.setattr(rm_mod.room_manager, "create_room", _fake_create)
+
+        import asyncio
+        # run_scheduling is sync, but it calls asyncio.run internally
+        # Monkeypatch asyncio.run to return our fake room directly
+        monkeypatch.setattr(asyncio, "run", lambda coro: asyncio.get_event_loop().run_until_complete(coro))
+
+        result = run_scheduling(run_id="run-sched", top_candidate="Alice Smith")
+        assert result["status"] == "booked"
+        assert "room_url" in result
+        assert "room_id" in result
+        assert result["candidate_id"] == "alice-smith"
+
+    def test_candidate_id_normalised(self, monkeypatch):
+        """Candidate name should be slug-normalised for the candidate_id."""
+        from app.agents.scheduling import run_scheduling
+        import asyncio
+        import app.rooms.room_manager as rm_mod
+
+        class FakeRoom:
+            room_id  = "r-1"
+            room_url = "http://localhost:8000/interview/r-1"
+
+        monkeypatch.setattr(rm_mod.room_manager, "create_room", lambda **kw: FakeRoom())
+        monkeypatch.setattr(asyncio, "run", lambda coro: FakeRoom())
+
+        result = run_scheduling(run_id="run-002", top_candidate="John Doe")
+        assert result.get("candidate_id") == "john-doe"

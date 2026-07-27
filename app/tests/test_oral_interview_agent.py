@@ -1,6 +1,6 @@
 """Tests for Oral Interview Agent Engine (Speech STT/TTS + Adaptive Q&A + Supabase Logging)."""
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.services.speech_engine import STTService, TTSService
@@ -13,13 +13,16 @@ async def test_stt_and_tts_services():
     stt = STTService()
     tts = TTSService()
 
-    text = await stt.transcribe_audio(b"mock_audio_bytes_123")
-    assert isinstance(text, str)
-    assert len(text) > 0
+    with patch.object(stt, "_transcribe_sync", return_value="This is mock transcribed text."), \
+         patch.object(tts, "_synthesize_sync", return_value=b"mock_audio_out_123"):
+        
+        text = await stt.transcribe_audio(b"mock_audio_bytes_123")
+        assert isinstance(text, str)
+        assert len(text) > 0
 
-    audio_out = await tts.synthesize_speech("What is your experience with Python?")
-    assert isinstance(audio_out, bytes)
-    assert len(audio_out) > 0
+        audio_out = await tts.synthesize_speech("What is your experience with Python?")
+        assert isinstance(audio_out, bytes)
+        assert len(audio_out) > 0
 
 
 def test_conversation_manager_context_assembly():
@@ -55,7 +58,9 @@ async def test_oral_interview_agent_process_turn():
     agent = OralInterviewAgent()
 
     with patch("app.agents.oral_interview_agent.db.insert", return_value={"id": "qa-99"}), \
-         patch("app.agents.oral_interview_agent.db.query", side_effect=lambda table, **kw: [{"id": "c-1", "resume": "Python engineer"}] if table == "candidates" else [{"jd": "Python Dev"}]):
+         patch("app.agents.oral_interview_agent.db.query", side_effect=lambda table, **kw: [{"id": "c-1", "resume": "Python engineer"}] if table == "candidates" else [{"jd": "Python Dev"}]), \
+         patch("app.services.speech_engine.TTSService.synthesize_speech_b64",
+               new_callable=AsyncMock, return_value="bW9jayBhdWRpbyBvdXRwdXQ="):
 
         res = await agent.process_turn(
             session_id="sess-200",

@@ -7,6 +7,7 @@ import ScorecardView from './components/ScorecardView';
 import UploadZone from './components/UploadZone';
 import PipelineVisualizer from './components/PipelineVisualizer';
 import HREvaluationDashboard from './components/HREvaluationDashboard';
+import InterviewRoom from './components/InterviewRoom';
 
 // Initialize Supabase Client
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -15,6 +16,12 @@ const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supa
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
 function App() {
+  // ── Interview Room route: /interview/{room_id} renders full-screen room ──
+  const pathMatch = window.location.pathname.match(/^\/interview\/([\w-]+)/);
+  if (pathMatch) {
+    return <InterviewRoom roomId={pathMatch[1]} />;
+  }
+
   const urlParams = new URLSearchParams(window.location.search);
   const [roleId] = useState(urlParams.get('roleId') || 'r1');
   const [candidateId] = useState(urlParams.get('candidateId') || 'c1');

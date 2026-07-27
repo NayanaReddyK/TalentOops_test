@@ -215,14 +215,10 @@ class EvaluatorAgent:
             "final_recommendation": final_recommendation,
         }
 
-        # Store in Supabase scorecards table
         scorecard_id = f"sc-{interview_id}"
-        try:
-            stored = await db.insert("scorecards", payload)
-            if stored and isinstance(stored, dict) and stored.get("id"):
-                scorecard_id = stored["id"]
-        except Exception as db_err:
-            logger.warning("Supabase insert warning for scorecards (%s): %s; using fallback id %s", interview_id, db_err, scorecard_id)
+        stored = await db.insert("scorecards", payload)
+        if stored and isinstance(stored, dict) and stored.get("id"):
+            scorecard_id = stored["id"]
         payload["scorecard_id"] = scorecard_id
 
         # Automatically trigger Manager Agent HR Debrief meeting creation

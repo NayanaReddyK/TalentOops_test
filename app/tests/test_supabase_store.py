@@ -1,22 +1,19 @@
 """Tests for Supabase embedding store & pgvector queries."""
 import pytest
 from unittest.mock import MagicMock, patch
-from app.embeddings.store import upsert_embedding, match, _MEM
+from app.embeddings.store import upsert_embedding, match
 
 
 def test_upsert_embedding_unconfigured_client():
-    _MEM.clear()
     with patch("app.embeddings.store._get_client", return_value=None):
-        upsert_embedding(
-            run_id="run-101",
-            kind="candidate",
-            ref_id="cand-001",
-            vector=[0.1] * 384,
-            metadata={"name": "Alice"}
-        )
-        assert len(_MEM) == 1
-        assert _MEM[0]["run_id"] == "run-101"
-        assert _MEM[0]["ref_id"] == "cand-001"
+        with pytest.raises(ValueError, match="Supabase is not configured"):
+            upsert_embedding(
+                run_id="run-101",
+                kind="candidate",
+                ref_id="cand-001",
+                vector=[0.1] * 384,
+                metadata={"name": "Alice"}
+            )
 
 
 def test_upsert_embedding_with_configured_supabase():
@@ -39,12 +36,6 @@ def test_upsert_embedding_with_configured_supabase():
 
 
 def test_match_embeddings_unconfigured_fallback():
-    _MEM.clear()
-    _MEM.append({"run_id": "run-200", "kind": "candidate", "ref_id": "c1", "embedding": [1.0] + [0.0] * 383, "metadata": {}})
-    _MEM.append({"run_id": "run-200", "kind": "candidate", "ref_id": "c2", "embedding": [0.0] * 384, "metadata": {}})
-
     with patch("app.embeddings.store._get_client", return_value=None):
-        results = match(run_id="run-200", query_vector=[1.0] + [0.0] * 383, kind="candidate", top_k=2)
-        assert len(results) == 2
-        assert results[0]["ref_id"] == "c1"
-        assert results[0]["score"] > results[1]["score"]
+        with pytest.raises(ValueError, match="Supabase is not configured"):
+            match(run_id="run-200", query_vector=[1.0] + [0.0] * 383, kind="candidate", top_k=2)

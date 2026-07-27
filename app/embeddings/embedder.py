@@ -54,26 +54,6 @@ class Embedder(Protocol):
         ...
 
 
-class MockEmbedder:
-    """Deterministic hashing embedder."""
-
-    def __init__(self, dim: int):
-        self.dim = dim
-
-    def embed(self, text: str) -> list[float]:
-        vec = [0.0] * self.dim
-        tokens = (text or "").lower().split()
-        for tok in tokens:
-            h = int(hashlib.sha256(tok.encode()).hexdigest(), 16)
-            idx = h % self.dim
-            sign = 1.0 if (h >> 8) & 1 else -1.0
-            vec[idx] += sign
-        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-        return [v / norm for v in vec]
-
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        return [self.embed(text) for text in texts]
-
 
 _EMBEDDING_CACHE: dict[str, list[float]] = {}
 
@@ -89,7 +69,8 @@ class RemoteEmbedder:
         settings = get_settings()
         from openai import OpenAI
 
-        if provider == "openrouter":
+        # "remote" is an alias for "openrouter" — the default remote provider
+        if provider in ("openrouter", "remote"):
             self._client = OpenAI(api_key=settings.OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
         elif provider == "groq":
             self._client = OpenAI(api_key=settings.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
@@ -156,5 +137,5 @@ def cosine(a: list[float], b: list[float]) -> float:
 def get_embedder() -> Embedder:
     settings = get_settings()
     if settings.embed_provider == "mock":
-        return MockEmbedder(settings.embed_dim)
+        raise ValueError("Mock embed provider is no longer supported. Enforcing REAL API execution.")
     return RemoteEmbedder(settings.embed_provider)

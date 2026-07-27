@@ -40,23 +40,7 @@ def _stable_float(seed: str, lo: float, hi: float) -> float:
     return lo + (h % 10_000) / 10_000 * (hi - lo)
 
 
-class MockLLMClient:
-    def complete_json(self, system: str, user: str, schema_hint: dict[str, Any]) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        for key, kind in schema_hint.items():
-            seed = f"{user}:{key}"
-            if kind == "str":
-                out[key] = f"[mock] {key} for: {user[:60]}"
-            elif kind == "float":
-                out[key] = round(_stable_float(seed, 0.4, 0.95), 3)
-            elif kind == "int":
-                out[key] = 1 + int(_stable_float(seed, 0, 5))
-            elif kind == "list[str]":
-                out[key] = _keywords(user) or [f"{key}-item-{i}" for i in range(3)]
-            else:
-                out[key] = None
-        logger.debug("MockLLM completed keys=%s", list(out))
-        return out
+
 
 
 def _extract_json_object(text: str, schema_hint: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -106,7 +90,7 @@ class RemoteLLMClient:
         try:
             resp = self._client.chat.completions.create(
                 model=self._model,
-                max_tokens=60,
+                max_tokens=512,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": f"{system}\nReturn raw JSON object matching keys: {json.dumps(list(schema_hint.keys()))}"},
@@ -116,13 +100,19 @@ class RemoteLLMClient:
             raw_content = resp.choices[0].message.content or "{}"
             return _extract_json_object(raw_content, schema_hint)
         except Exception as e:
-            logger.warning("Remote LLM API error (%s): %s. Falling back to MockLLM Client.", self._model, e)
-            return MockLLMClient().complete_json(system, user, schema_hint)
+            logger.error(
+                "Remote LLM API call failed (model=%s). No mock fallback — real error propagated. Error: %s",
+                self._model, e,
+            )
+            raise RuntimeError(
+                f"LLM API call failed (model={self._model}): {e}. "
+                "Set LLM_PROVIDER=mock in .env to use mock mode explicitly."
+            ) from e
 
 
 def get_llm_client() -> LLMClient:
     provider = get_settings().llm_provider
     if provider == "mock":
-        return MockLLMClient()
+        raise ValueError("Mock LLM provider is no longer supported. Enforcing REAL API execution.")
     return RemoteLLMClient(provider)
 

@@ -66,7 +66,9 @@ async def test_evaluator_agent_evaluate_session():
     ]
 
     with patch("app.agents.evaluator_agent.db.insert", return_value={"id": "sc-123"}), \
-         patch("app.agents.evaluator_agent.upsert_embedding"):
+         patch("app.agents.evaluator_agent.upsert_embedding"), \
+         patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384), \
+         patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384]):
 
         scorecard = await evaluator.evaluate_transcript(
             interview_id="iv-cand-100",
@@ -97,7 +99,9 @@ async def test_multi_agent_coordinator_flow_consent_granted():
     with patch("app.services.multi_agent_coordinator.get_vexa_client") as mock_vexa, \
          patch("app.services.multi_agent_coordinator.db.query", side_effect=lambda table, **kw: [rubric] if table == "rubrics" else [{"id": "cand-200", "name": "Sam"}]), \
          patch("app.services.multi_agent_coordinator.ConsentAgent.process_response", return_value={"consent_granted": True, "status": "CONSENT_GRANTED"}), \
-         patch("app.services.multi_agent_coordinator.EvaluatorAgent.evaluate_transcript", return_value={"scorecard": {"overall_fit": 0.9}, "scorecard_id": "sc-99"}):
+         patch("app.services.multi_agent_coordinator.EvaluatorAgent.evaluate_transcript", return_value={"scorecard": {"overall_fit": 0.9}, "scorecard_id": "sc-99"}), \
+         patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384), \
+         patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384]):
 
         from unittest.mock import AsyncMock
         mock_bot = MagicMock()
@@ -121,7 +125,9 @@ async def test_multi_agent_coordinator_flow_consent_denied():
     )
 
     with patch("app.services.multi_agent_coordinator.get_vexa_client") as mock_vexa, \
-         patch("app.services.multi_agent_coordinator.ConsentAgent.process_response", return_value={"consent_granted": False, "status": "CONSENT_DENIED"}):
+         patch("app.services.multi_agent_coordinator.ConsentAgent.process_response", return_value={"consent_granted": False, "status": "CONSENT_DENIED"}), \
+         patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384), \
+         patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384]):
 
         from unittest.mock import AsyncMock
         mock_bot = MagicMock()
@@ -137,7 +143,9 @@ async def test_multi_agent_coordinator_flow_consent_denied():
 
 @pytest.mark.asyncio
 async def test_start_meet_session_endpoint():
-    with patch("app.services.multi_agent_coordinator.MultiAgentCoordinator.run_session", return_value={"state": "EVALUATION_COMPLETE", "consent_granted": True}):
+    with patch("app.services.multi_agent_coordinator.MultiAgentCoordinator.run_session", return_value={"state": "EVALUATION_COMPLETE", "consent_granted": True}), \
+         patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384), \
+         patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384]):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             resp = await ac.post("/start_meet_session", json={

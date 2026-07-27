@@ -30,9 +30,8 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
 
-    # Vexa Bot Configuration
-    VEXA_API_BASE: str = "http://localhost:18056"
-    VEXA_API_KEY: str = ""
+    # Self-hosted Interview Room
+    ROOM_BASE_URL: str = "http://localhost:8000"
 
     # CORS Configuration - Security
     # In development: use http://localhost:5173 (Vite default)
@@ -64,7 +63,7 @@ class Settings(BaseSettings):
     # Embedding & LLM Provider Configuration
     EMBED_DIM: int = 384
     LLM_PROVIDER: str = "openrouter"
-    EMBED_PROVIDER: str = "mock"
+    EMBED_PROVIDER: str = "remote"
 
     @property
     def supabase_configured(self) -> bool:
@@ -107,23 +106,13 @@ class Settings(BaseSettings):
         return self.OFFLINE_MODE and self.OFFLINE_MODE.lower() == "true"
 
     # Provider & Path Settings
-    EMAIL_PROVIDER: str = "mock"
-    CALENDAR_PROVIDER: str = "mock"
-    GOOGLE_TOKEN_PATH: str = "token.json"
+    EMAIL_PROVIDER: str = "smtp"
     FROM_ADDRESS: str = "noreply@talentops.ai"
     LLM_MODEL: str = "meta-llama/llama-3.3-70b-instruct"
 
     @property
     def email_provider(self) -> str:
         return self.EMAIL_PROVIDER
-
-    @property
-    def calendar_provider(self) -> str:
-        return self.CALENDAR_PROVIDER
-
-    @property
-    def google_token_path(self) -> str:
-        return self.GOOGLE_TOKEN_PATH
 
     @property
     def from_address(self) -> str:
@@ -134,7 +123,57 @@ class Settings(BaseSettings):
         return self.LLM_MODEL
 
 
+    # Speech Engine Provider Configuration
+    STT_PROVIDER: str = "deepgram"
+    TTS_PROVIDER: str = "google"
+    DEEPGRAM_API_KEY: str = ""
+
+    @property
+    def stt_provider(self) -> str:
+        return self.STT_PROVIDER
+
+    @property
+    def tts_provider(self) -> str:
+        return self.TTS_PROVIDER
+
+
 settings = Settings()
+
+
+def validate_production_settings(s: Settings | None = None) -> None:
+    """Log actionable warnings when mock providers are active in IS_PRODUCTION=True mode.
+
+    Call this once at application startup (in main.py lifespan) so operators
+    are immediately alerted to misconfigured providers before the first request.
+    """
+    import logging
+    cfg = s or settings
+    _log = logging.getLogger("talentops.config.validation")
+
+    if not cfg.IS_PRODUCTION:
+        return  # Mock providers are acceptable in development / test mode
+
+    mock_warnings: list[str] = []
+    if cfg.LLM_PROVIDER == "mock":
+        mock_warnings.append("LLM_PROVIDER=mock — all LLM calls will return fake data")
+    if cfg.EMBED_PROVIDER == "mock":
+        mock_warnings.append("EMBED_PROVIDER=mock — all embeddings will be random vectors")
+    if cfg.EMAIL_PROVIDER == "mock":
+        mock_warnings.append("EMAIL_PROVIDER=mock — no real emails will be sent")
+    if cfg.STT_PROVIDER == "mock":
+        mock_warnings.append("STT_PROVIDER=mock — audio will NOT be transcribed by a real STT engine")
+    if cfg.TTS_PROVIDER == "mock":
+        mock_warnings.append("TTS_PROVIDER=mock — agent speech will NOT be synthesized by a real TTS engine")
+
+    for warning in mock_warnings:
+        _log.warning("[PRODUCTION CONFIG] %s", warning)
+
+    if mock_warnings:
+        _log.error(
+            "[PRODUCTION CONFIG] %d mock provider(s) detected in IS_PRODUCTION=True environment. "
+            "Update .env to use real API providers before serving live traffic.",
+            len(mock_warnings)
+        )
 
 
 def get_settings() -> Settings:

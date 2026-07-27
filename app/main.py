@@ -20,6 +20,11 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="TalentOps")
 
+    # Validate provider configuration at startup — warns loudly if mock providers
+    # are active while IS_PRODUCTION=True so operators catch misconfigurations early.
+    from app.config import validate_production_settings
+    validate_production_settings()
+
     # Apply middleware for CORS, gzip compression, and logging
     app.add_middleware(
         CORSMiddleware,
@@ -55,10 +60,7 @@ def create_app() -> FastAPI:
             "supervisor_nodes": nodes,
         }
 
-    @app.get("/outbox")
-    async def outbox_endpoint() -> dict:
-        from app.agents.email_client import get_mock_outbox
-        return {"emails": [msg.__dict__ for msg in get_mock_outbox()]}
+
 
     class RunRequest(BaseModel):
         goal: str
@@ -72,7 +74,6 @@ def create_app() -> FastAPI:
 
     class DebriefDeployRequest(BaseModel):
         run_id: str
-        meet_link: Optional[str] = None
 
     @app.post("/run")
     async def run_pipeline_endpoint(
@@ -178,22 +179,22 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    class StartMeetSessionRequest(BaseModel):
+    class StartRoomSessionRequest(BaseModel):
         candidate_id: str
         role_id: str
-        meet_link: str
+        room_id: str
         consent_response: Optional[str] = "Yes, I consent to the recording."
         candidate_turns: Optional[List[str]] = None
 
     @app.post("/start_meet_session")
-    async def start_meet_session_endpoint(req: StartMeetSessionRequest) -> dict:
+    async def start_meet_session_endpoint(req: StartRoomSessionRequest) -> dict:
         from app.services.multi_agent_coordinator import MultiAgentCoordinator
         from fastapi import HTTPException
         try:
             coord = MultiAgentCoordinator(
                 candidate_id=req.candidate_id,
                 role_id=req.role_id,
-                meet_link=req.meet_link,
+                room_id=req.room_id,
             )
             return await coord.run_session(
                 consent_response_text=req.consent_response or "Yes, I consent to the recording.",
@@ -309,11 +310,11 @@ def create_app() -> FastAPI:
 
         sessions = await db.query("hr_debrief_sessions", interview_id=interview_id)
         if not sessions:
-            # Return default debrief session
+            # Return default debrief session (room_url instead of meet_link)
             return {
                 "interview_id": interview_id,
                 "candidate_id": "c-alex",
-                "meet_link": f"https://meet.google.com/mgr-{interview_id[:8]}",
+                "room_url": f"http://localhost:8000/interview/debrief-{interview_id[:8]}",
                 "status": "Manager Agent Waiting",
                 "summary": "Manager Agent ready for HR oral debrief.",
                 "knowledge_context": {"candidate_id": "c-alex", "interview_id": interview_id},
@@ -338,13 +339,31 @@ def create_app() -> FastAPI:
         payload = {"role_id": req.role_id, "from": req.from_email, "subject": req.subject or ""}
         return await handle_incoming_email(payload)
 
-    for name in ("webhooks", "fairness", "interviews"):
+    for name in ("webhooks", "fairness", "interviews", "rooms"):
         try:
             module = __import__(f"app.api.routes.{name}", fromlist=["router"])
             app.include_router(module.router)
-        except ImportError:
-            pass
+        except (ImportError, AttributeError):
+            # Also register from app.rooms if not in api.routes
+            if name == "rooms":
+                try:
+                    from app.rooms.router import router as rooms_router
+                    app.include_router(rooms_router)
+                except ImportError:
+                    pass
 
+    # ── WebSocket: interview rooms (primary) ─────────────────────────────────
+    try:
+        from app.rooms.signaling import room_ws_handler
+        from fastapi import WebSocket
+
+        @app.websocket("/ws/room/{room_id}")
+        async def room_ws(websocket: WebSocket, room_id: str) -> None:
+            await room_ws_handler(websocket, room_id)
+    except ImportError:
+        pass
+
+    # ── WebSocket: legacy audio bridge (kept for backward compat) ────────────
     try:
         from app.services.audio_bridge import ws_endpoint
         from fastapi import WebSocket, status
@@ -352,13 +371,12 @@ def create_app() -> FastAPI:
         @app.websocket("/ws/audio/{meeting_id}")
         async def audio_ws(websocket: WebSocket, meeting_id: str) -> None:
             await ws_endpoint(websocket, meeting_id)
-            
+
         @app.websocket("/ws/audio")
         async def audio_ws_fallback(websocket: WebSocket) -> None:
-            # Query param fallback (e.g. ?meeting_id=xxx or ?interview_id=xxx)
             meeting_id = websocket.query_params.get("meeting_id") or websocket.query_params.get("interview_id")
             if not meeting_id:
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Meeting ID or Interview ID required")
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Meeting ID required")
                 return
             await ws_endpoint(websocket, meeting_id)
     except ImportError:

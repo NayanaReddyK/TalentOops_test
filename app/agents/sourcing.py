@@ -11,11 +11,8 @@ from app.llm.client import get_llm_client
 
 logger = logging.getLogger("talentops.sourcing")
 
-_MOCK_CORPUS = [
-    {"id": "cand-001", "text": "Priya Rao. Senior backend engineer. Python, PyTorch, asyncio, Postgres, Kafka. 8 years."},
-    {"id": "cand-002", "text": "Sam Lee. Data scientist. Python, PyTorch, SQL, statistics. 5 years."},
-    {"id": "cand-003", "text": "Alex Kim. Frontend engineer. React, TypeScript, CSS. 4 years."},
-]
+# _MOCK_CORPUS removed — no silent mock fallback in production.
+# Real candidate resume files must be supplied via the `corpus` parameter.
 
 
 from app.services.parser import parse_resume, extract_email_from_text, ResumeParseError
@@ -52,20 +49,33 @@ def extract_profile(text: str) -> dict[str, Any]:
 
 
 def _load_corpus(corpus: list[dict] | None) -> list[dict]:
+    """Load and validate candidate corpus from real resume files.
+
+    Raises ValueError if no corpus is supplied — no mock fallback.
+    """
     if not corpus:
-        logger.info("No candidate resume file uploaded. Using default candidate corpus.")
-        return _MOCK_CORPUS
+        logger.error(
+            "run_sourcing called with no candidate corpus. "
+            "Supply resume files via the `corpus` parameter. "
+            "No mock data will be injected."
+        )
+        return []
     loaded = []
     for item in corpus:
         if "pdf_path" in item:
-            text = parse_pdf(item["pdf_path"])
-            email = extract_email_from_text(text)
-            loaded.append({"id": item["id"], "text": text, "email": email})
+            try:
+                text = parse_pdf(item["pdf_path"])
+                email = extract_email_from_text(text)
+                loaded.append({"id": item["id"], "text": text, "email": email})
+            except Exception as exc:
+                logger.error("Failed to load resume for candidate %s: %s", item.get("id"), exc)
         else:
             loaded.append(item)
     if not loaded:
-        logger.warning("No valid candidate resume loaded from file. Using default candidate corpus.")
-        return _MOCK_CORPUS
+        logger.error(
+            "Corpus supplied but no valid candidate resumes could be loaded. "
+            "Check file paths and formats. No mock data will be injected."
+        )
     return loaded
 
 

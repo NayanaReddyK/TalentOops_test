@@ -38,34 +38,14 @@ def _get_client():
 def _insert_sync(row: dict[str, Any]) -> None:
     client = _get_client()
     if client is None:
-        logger.info("[event:stdout] %s", row)
-        return
+        raise ValueError("Supabase is not configured. Enforcing REAL API execution.")
 
     # Attempt 1: Full schema insert (run_id, ts, source, event_type, payload)
     try:
         client.table("events").insert(row).execute()
-        return
-    except Exception:
-        pass
-
-    # Attempt 2: Minimal fallback schema insert (event_type, payload, candidate_id)
-    try:
-        payload = row.get("payload") or {}
-        minimal_row = {
-            "event_type": row.get("event_type", "event"),
-            "payload": payload,
-        }
-        if "candidate_id" in payload:
-            minimal_row["candidate_id"] = str(payload["candidate_id"])
-        elif "candidate_id" in row:
-            minimal_row["candidate_id"] = str(row["candidate_id"])
-
-        client.table("events").insert(minimal_row).execute()
-        return
-    except Exception:
-        pass
-
-    logger.debug("[event:stdout_fallback] %s", row)
+    except Exception as e:
+        logger.error("[event:insert_failed] %s: %s", type(e).__name__, str(e))
+        raise
 
 
 async def _write(row: dict[str, Any]) -> None:

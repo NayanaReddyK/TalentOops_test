@@ -97,7 +97,7 @@ export default function HRDebriefCard({ interviewId = 'iv-alex', candidateId = '
     );
   }
 
-  const meetLink = session?.meet_link || `https://meet.google.com/mgr-${interviewId.slice(0, 8)}`;
+  const roomUrl = session?.room_url || `http://localhost:8000/interview/debrief-${interviewId.slice(0, 8)}`;
   const status = session?.status || 'Manager Agent Waiting';
 
   return (
@@ -112,7 +112,7 @@ export default function HRDebriefCard({ interviewId = 'iv-alex', candidateId = '
             </h3>
           </div>
           <p className="text-xs text-gray-300 mt-1 font-mono">
-            Join the live Google Meet call to verbally debrief with the AI Manager Agent using complete interview transcript RAG context.
+            Join the live TalentOops Interview Room to verbally debrief with the AI Manager Agent using complete interview transcript RAG context.
           </p>
         </div>
 
@@ -123,12 +123,12 @@ export default function HRDebriefCard({ interviewId = 'iv-alex', candidateId = '
           </span>
 
           <a
-            href={meetLink}
+            href={roomUrl}
             target="_blank"
             rel="noreferrer"
             className="px-4 py-2 bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 text-white font-bold text-xs rounded-lg shadow-lg shadow-purple-500/20 transition-all flex items-center gap-1.5"
           >
-            <span>📞</span> Join Oral Debrief Call
+            <span>🎙️</span> Join Debrief Room
           </a>
         </div>
       </div>

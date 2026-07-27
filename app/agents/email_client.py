@@ -21,20 +21,7 @@ class EmailClient(Protocol):
         ...
 
 
-@dataclass
-class MockEmailClient:
-    outbox: list[SentMessage] = field(default_factory=list)
 
-    def send(self, to: str, subject: str, body: str) -> SentMessage:
-        msg = SentMessage(
-            to=to,
-            subject=subject,
-            body=body,
-            message_id=f"mock-{abs(hash((to, subject))) % 100_000:05d}",
-        )
-        self.outbox.append(msg)
-        logger.info("[mock-email] -> %s | %s", to, subject)
-        return msg
 
 
 class SMTPEmailClient:
@@ -43,6 +30,8 @@ class SMTPEmailClient:
     def __init__(self):
         from app.config import get_settings
         self.settings = get_settings()
+        # outbox mirrors MockEmailClient.outbox for test introspection and in-process audit
+        self.outbox: list[SentMessage] = []
 
     def send(self, to: str, subject: str, body: str) -> SentMessage:
         import smtplib
@@ -79,19 +68,14 @@ class SMTPEmailClient:
             logger.error("Failed to send SMTP email to %s: %s", to, exc)
             raise RuntimeError(f"SMTP email dispatch failed: {exc}") from exc
 
-        return SentMessage(to=to, subject=subject, body=body, message_id=message_id)
-
-
-_MOCK_CLIENT = MockEmailClient()
+        sent = SentMessage(to=to, subject=subject, body=body, message_id=message_id)
+        self.outbox.append(sent)
+        return sent
 
 
 def get_email_client() -> EmailClient:
     from app.config import get_settings
     settings = get_settings()
-    if settings.email_provider == "smtp":
-        return SMTPEmailClient()
-    return _MOCK_CLIENT
-
-
-def get_mock_outbox() -> list[SentMessage]:
-    return _MOCK_CLIENT.outbox
+    if settings.email_provider == "mock":
+        raise ValueError("Mock email provider is no longer supported. Enforcing REAL API execution.")
+    return SMTPEmailClient()
