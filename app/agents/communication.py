@@ -63,10 +63,9 @@ def _send(run_id: str, kind: str, candidate: str, subject: str, body: str, candi
     msg = client.send(to=target_address, subject=subject, body=body)
 
     # Attempt real SMTP dispatch if configured
-    try:
+    from app.config import settings
+    if settings.SMTP_SERVER and not settings.is_offline_mode:
         _dispatch_smtp_email(target_address, subject, body)
-    except Exception as e:
-        logger.debug("SMTP real dispatch skipped/fallback: %s", e)
 
     log_event(
         run_id, source="communication", event_type="email_sent",

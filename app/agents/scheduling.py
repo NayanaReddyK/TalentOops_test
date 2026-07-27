@@ -16,7 +16,17 @@ def run_scheduling(run_id: str, top_candidate: str | None, candidate_email: str 
     if not top_candidate or not slots:
         return {"status": "no_booking", "slots": slots, "top_candidate": top_candidate}
 
-    attendee = candidate_email if (candidate_email and "@" in candidate_email) else f"{top_candidate.lower().replace(' ', '.')}@example.com"
+    resolved_email = candidate_email
+    if not resolved_email and top_candidate:
+        try:
+            from app.services.database import db
+            candidates = db.query_sync("candidates", name=top_candidate) if hasattr(db, "query_sync") else []
+            if candidates and candidates[0].get("email"):
+                resolved_email = candidates[0]["email"]
+        except Exception:
+            pass
+
+    attendee = resolved_email if (resolved_email and "@" in resolved_email) else f"{top_candidate.lower().replace(' ', '.')}@example.com"
     booking = client.book(
         slot_iso=slots[0],
         attendee=attendee,

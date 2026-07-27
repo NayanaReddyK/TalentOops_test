@@ -43,15 +43,18 @@ def extract_drive_id_and_kind(drive_url_or_id: str) -> tuple[str, str]:
     return drive_url_or_id.strip(), "folder"
 
 
+from app.services.parser import parse_resume_bytes as _parse_resume_bytes, extract_email_from_text
+
+
 def parse_pdf_bytes(pdf_bytes: bytes) -> str:
     """Extract text from PDF raw bytes."""
     try:
-        import io
-        reader = PdfReader(io.BytesIO(pdf_bytes))
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
+        parsed = _parse_resume_bytes(pdf_bytes, file_name="resume.pdf")
+        return parsed.raw_text
     except Exception as e:
         logger.error("Failed to parse PDF bytes: %s", e)
         raise RuntimeError(f"Error parsing PDF content: {e}") from e
+
 
 
 def download_public_drive_file(file_id: str) -> bytes | None:

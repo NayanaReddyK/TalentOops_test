@@ -6,6 +6,7 @@ import FairnessHeatmap from './components/FairnessHeatmap';
 import ScorecardView from './components/ScorecardView';
 import UploadZone from './components/UploadZone';
 import PipelineVisualizer from './components/PipelineVisualizer';
+import HREvaluationDashboard from './components/HREvaluationDashboard';
 
 // Initialize Supabase Client
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -18,11 +19,11 @@ function App() {
   const [roleId] = useState(urlParams.get('roleId') || 'r1');
   const [candidateId] = useState(urlParams.get('candidateId') || 'c1');
   const [interviewId, setInterviewId] = useState(urlParams.get('interviewId') || 'iv-alex');
+  const [activeTab, setActiveTab] = useState('live'); // 'live' | 'hr'
 
   // Pipeline execution state
   const [goal, setGoal] = useState('Hire a Senior Backend Engineer (Python, FastAPI, Postgres)');
   const [standard, setStandard] = useState('Candidate must demonstrate strong experience with async Python, distributed systems, and SQL optimization');
-  const [driveUrl, setDriveUrl] = useState('https://drive.google.com/drive/folders/1_TalentOps_Resumes_Demo');
   const [selectedFile, setSelectedFile] = useState(null);
   const [running, setRunning] = useState(false);
   const [activeNode, setActiveNode] = useState('');
@@ -41,9 +42,6 @@ function App() {
 
     try {
       let corpus = [];
-      if (driveUrl) {
-        corpus.push({ drive_url: driveUrl });
-      }
 
       if (selectedFile) {
         const uploadRes = await fetch(`${API_BASE}/upload_resume`, {
@@ -60,7 +58,7 @@ function App() {
       const response = await fetch(`${API_BASE}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal, standard, drive_url: driveUrl, corpus })
+        body: JSON.stringify({ goal, standard, corpus })
       });
 
       if (!response.ok) {
@@ -109,7 +107,7 @@ function App() {
             TalentOps Autonomous Hiring Ecosystem
           </h1>
           <p className="text-[var(--color-text-secondary)] font-mono text-sm mt-2">
-            Real-Time Multi-Agent Hiring: Google Drive → Real Emails & Meet → Live Interview → Manager AI Debrief
+            Real-Time Multi-Agent Hiring: Candidate Resume PDF → Real Emails & Meet → Live Interview → Manager AI Debrief
           </p>
         </div>
         
@@ -152,7 +150,7 @@ function App() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
         <div className="lg:col-span-1 glass-panel p-6 flex flex-col justify-between">
           <div>
-            <h2 className="text-lg font-bold mb-3 text-cyan-400">🎯 Hiring Goal & Drive Resumes</h2>
+            <h2 className="text-lg font-bold mb-3 text-cyan-400">🎯 Hiring Goal & Candidate Resume</h2>
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wider block mb-1">Hiring Role Goal</label>
@@ -170,16 +168,6 @@ function App() {
                   onChange={(e) => setStandard(e.target.value)}
                   rows="2"
                   className="w-full bg-[var(--color-glass-base)] border border-[var(--color-glass-border)] rounded-md p-2 text-sm focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wider block mb-1">📁 Google Drive Resumes Folder Link</label>
-                <input
-                  type="text"
-                  value={driveUrl}
-                  onChange={(e) => setDriveUrl(e.target.value)}
-                  placeholder="https://drive.google.com/drive/folders/..."
-                  className="w-full bg-[var(--color-glass-base)] border border-[var(--color-glass-border)] rounded-md p-2 text-sm font-mono focus:outline-none focus:border-cyan-500 text-cyan-300"
                 />
               </div>
               <UploadZone onFileSelect={(file) => setSelectedFile(file)} />
@@ -241,23 +229,52 @@ function App() {
         </div>
       </div>
 
-      {/* Main Grid: Live Audio Stream, Scorecard & Fairness Lens */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="flex flex-col gap-8 h-[650px]">
-          <div className="flex-1 min-h-0 relative">
-             <TranscriptStream supabase={supabase} interviewId={interviewId} />
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-8 h-[650px]">
-          <div className="flex-1 min-h-0">
-             <FairnessHeatmap roleId={roleId} />
-          </div>
-          <div className="flex-1 min-h-0">
-             <ScorecardView supabase={supabase} interviewId={interviewId} />
-          </div>
-        </div>
+      {/* View Mode Navigation Tabs */}
+      <div className="flex gap-2 mb-6 border-b border-[var(--color-glass-border)] pb-3">
+        <button
+          onClick={() => setActiveTab('live')}
+          className={`px-4 py-2 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
+            activeTab === 'live'
+              ? 'bg-cyan-500 text-black shadow-lg shadow-cyan-500/20'
+              : 'bg-[var(--color-glass-base)] text-gray-400 hover:text-white border border-[var(--color-glass-border)]'
+          }`}
+        >
+          <span>🎙️</span> Live Audio Stream & Pipeline
+        </button>
+        <button
+          onClick={() => setActiveTab('hr')}
+          className={`px-4 py-2 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
+            activeTab === 'hr'
+              ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/20'
+              : 'bg-[var(--color-glass-base)] text-gray-400 hover:text-white border border-[var(--color-glass-border)]'
+          }`}
+        >
+          <span>📊</span> HR Evaluation Report Dashboard
+        </button>
       </div>
+
+      {/* Conditional View Mode Content */}
+      {activeTab === 'hr' ? (
+        <HREvaluationDashboard interviewId={interviewId} />
+      ) : (
+        /* Main Grid: Live Audio Stream, Scorecard & Fairness Lens */
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="flex flex-col gap-8 h-[650px]">
+            <div className="flex-1 min-h-0 relative">
+               <TranscriptStream supabase={supabase} interviewId={interviewId} />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-8 h-[650px]">
+            <div className="flex-1 min-h-0">
+               <FairnessHeatmap roleId={roleId} />
+            </div>
+            <div className="flex-1 min-h-0">
+               <ScorecardView supabase={supabase} interviewId={interviewId} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

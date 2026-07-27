@@ -38,12 +38,14 @@ create table if not exists public.embeddings (
     run_id      text not null,
     kind        text not null,                    -- 'jd' | 'candidate'
     ref_id      text not null,
-    embedding   vector(384),                      -- 384 dim matching all-MiniLM-L6-v2
+    embedding   vector(384),                      -- 384 dim matching text-embedding-3-small
     metadata    jsonb not null default '{}'::jsonb,
-    created_at  timestamptz not null default now()
+    created_at  timestamptz not null default now(),
+    unique (run_id, kind, ref_id)
 );
 
 create index if not exists embeddings_run_kind_idx on public.embeddings (run_id, kind);
+create index if not exists embeddings_hnsw_idx on public.embeddings using hnsw (embedding vector_cosine_ops);
 
 -- Nearest-neighbour match function
 create or replace function public.match_embeddings(
@@ -88,11 +90,15 @@ create table if not exists public.interviews (
 );
 
 create table if not exists public.scorecards (
-    id            uuid primary key default gen_random_uuid(),
-    interview_id  text,
-    candidate_id  text,
-    scorecard     jsonb default '{}'::jsonb,
-    created_at    timestamptz default now()
+    id                         uuid primary key default gen_random_uuid(),
+    interview_id               text,
+    candidate_id               text,
+    scorecard                  jsonb default '{}'::jsonb,
+    behavioral_metrics         jsonb default '{}'::jsonb,
+    detailed_competencies      jsonb default '[]'::jsonb,
+    full_transcript_evaluations jsonb default '[]'::jsonb,
+    final_recommendation       jsonb default '{}'::jsonb,
+    created_at                 timestamptz default now()
 );
 
 create table if not exists public.demographics (
@@ -120,3 +126,31 @@ create table if not exists public.comms (
     status      text default 'sent',
     created_at  timestamptz default now()
 );
+
+create table if not exists public.interview_qa_logs (
+    id                          uuid primary key default gen_random_uuid(),
+    session_id                  text not null,
+    question_number             int not null,
+    question_text               text not null,
+    candidate_answer_transcript text not null,
+    confidence_score            float default 0.0,
+    metadata                    jsonb not null default '{}'::jsonb,
+    timestamp                   timestamptz not null default now(),
+    unique (session_id, question_number)
+);
+
+create index if not exists qa_logs_session_idx on public.interview_qa_logs (session_id);
+
+create table if not exists public.hr_debrief_sessions (
+    id                uuid primary key default gen_random_uuid(),
+    interview_id      text not null,
+    candidate_id      text not null,
+    meet_link         text not null,
+    status            text not null default 'Manager Agent Waiting',
+    summary           text default '',
+    knowledge_context jsonb not null default '{}'::jsonb,
+    created_at        timestamptz not null default now(),
+    unique (interview_id)
+);
+
+create index if not exists hr_debrief_interview_idx on public.hr_debrief_sessions (interview_id);

@@ -85,11 +85,6 @@ def _extract_json_object(text: str, schema_hint: dict[str, Any] | None = None) -
     try:
         return json.loads(text)
     except Exception:
-        if schema_hint:
-            fallback = {}
-            for k in schema_hint.keys():
-                fallback[k] = [] if "list" in k or "skills" in k or "competencies" in k else "Extracted Profile"
-            return fallback
         raise
 
 
@@ -121,26 +116,13 @@ class RemoteLLMClient:
             raw_content = resp.choices[0].message.content or "{}"
             return _extract_json_object(raw_content, schema_hint)
         except Exception as e:
-            logger.warning("Remote LLM API call failed (%s), returning schema fallback: %s", self._model, e)
-            fallback = {}
-            for k, v in schema_hint.items():
-                if isinstance(v, int) or "score" in k or "rating" in k:
-                    fallback[k] = 85
-                elif isinstance(v, list) or "skills" in k:
-                    fallback[k] = ["Python", "FastAPI", "AI Systems"]
-                elif isinstance(v, dict):
-                    fallback[k] = {"summary": "Profile evaluation completed."}
-                else:
-                    fallback[k] = "Standard Requirement"
-            return fallback
+            logger.warning("Remote LLM API error (%s): %s. Falling back to MockLLM Client.", self._model, e)
+            return MockLLMClient().complete_json(system, user, schema_hint)
 
 
 def get_llm_client() -> LLMClient:
     provider = get_settings().llm_provider
     if provider == "mock":
         return MockLLMClient()
-    try:
-        return RemoteLLMClient(provider)
-    except Exception as e:
-        logger.warning("Failed to initialize RemoteLLMClient (%s), falling back to MockLLMClient: %s", provider, e)
-        return MockLLMClient()
+    return RemoteLLMClient(provider)
+

@@ -115,7 +115,8 @@ class GoogleCalendarClient:
             .insert(calendarId="primary", body=event, conferenceDataVersion=1)
             .execute()
         )
-        meet_link = created.get("hangoutLink", "")
+        from app.services.calendar_service import extract_google_meet_url
+        meet_link = extract_google_meet_url(created)
         return {
             "status": "confirmed",
             "event_id": created["id"],

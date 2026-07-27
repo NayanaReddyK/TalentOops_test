@@ -48,13 +48,13 @@ async def generate_brief(role_id: str, candidate_id: str, jd: str, rubric: dict,
         try:
             raw = await groq_chat(messages, json_mode=True)
             break
-        except Exception:
+        except Exception as e:
             if attempt == 2:
-                break
+                raise e
             await asyncio.sleep(0.01 * 2**attempt)
     brief = _parse_json_block(raw) if raw else None
     if brief is None:
-        brief = _fallback_brief(rubric)
+        raise RuntimeError("Failed to generate or parse interview brief from LLM API")
     return await db.insert("briefs", {
         "role_id": role_id, "candidate_id": candidate_id, "brief": brief})
 

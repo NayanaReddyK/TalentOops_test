@@ -42,7 +42,8 @@ def run_interview(run_id: str, rubric: Rubric, candidate_id: str, meet_link: str
                 ))
             logger.info("Vexa bot joined meeting: %s", vexa_res)
         except Exception as e:
-            logger.warning("Vexa meeting join fallback: %s", e)
+            logger.error("Vexa meeting join failed: %s", e)
+            raise
     
     # Store candidate and role records in DB so Vexa and Scorecard can reference them
     role_dict = {

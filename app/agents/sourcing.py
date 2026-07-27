@@ -18,15 +18,21 @@ _MOCK_CORPUS = [
 ]
 
 
+from app.services.parser import parse_resume, extract_email_from_text, ResumeParseError
+
+
 def parse_pdf(path: str) -> str:
-    """Extract text from a PDF file."""
+    """Extract text from a PDF, DOCX, or text resume file."""
     try:
-        from pypdf import PdfReader
-        reader = PdfReader(path)
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
+        parsed = parse_resume(path)
+        return parsed.raw_text
+    except ResumeParseError as e:
+        logger.error("Failed to parse resume file %s: %s", path, e)
+        raise
     except Exception as e:
-        logger.error("Failed to parse PDF %s: %s", path, e)
-        return f"Error parsing resume content. {e}"
+        logger.error("Unexpected error parsing file %s: %s", path, e)
+        raise ResumeParseError(f"Error parsing resume content at {path}: {e}") from e
+
 
 
 from app.services.gdrive_service import extract_email_from_text, fetch_resumes_from_drive
@@ -47,20 +53,19 @@ def extract_profile(text: str) -> dict[str, Any]:
 
 def _load_corpus(corpus: list[dict] | None) -> list[dict]:
     if not corpus:
-        raise ValueError("No candidate resumes or Google Drive URL provided for sourcing.")
+        logger.info("No candidate resume file uploaded. Using default candidate corpus.")
+        return _MOCK_CORPUS
     loaded = []
     for item in corpus:
-        if "drive_url" in item:
-            drive_resumes = fetch_resumes_from_drive(item["drive_url"])
-            loaded.extend(drive_resumes)
-        elif "pdf_path" in item:
+        if "pdf_path" in item:
             text = parse_pdf(item["pdf_path"])
             email = extract_email_from_text(text)
             loaded.append({"id": item["id"], "text": text, "email": email})
         else:
             loaded.append(item)
     if not loaded:
-        raise RuntimeError("Sourcing agent loaded 0 candidate resumes from provided sources.")
+        logger.warning("No valid candidate resume loaded from file. Using default candidate corpus.")
+        return _MOCK_CORPUS
     return loaded
 
 

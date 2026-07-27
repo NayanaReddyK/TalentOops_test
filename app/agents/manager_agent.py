@@ -83,8 +83,6 @@ def determine_next_stage(current_stage: str | None, completed: list[str]) -> tup
     if current_stage == WorkflowStage.SCREENING:
         if "sourcing" not in completed:
             return WorkflowStage.SCREENING, "sourcing"
-        if "screening" not in completed:
-            return WorkflowStage.SCREENING, "screening"
         return WorkflowStage.SCHEDULING, "scheduling"
 
     if current_stage == WorkflowStage.SCHEDULING:
