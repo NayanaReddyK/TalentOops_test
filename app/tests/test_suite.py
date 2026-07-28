@@ -24,7 +24,7 @@ class TestConfigurationSystem:
 
     def test_settings_loads_all_environment_variables(self, monkeypatch):
         """Test that Settings loads all environment variables correctly."""
-        for key in ["SUPABASE_URL", "SUPABASE_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "VEXA_API_KEY"]:
+        for key in ["SUPABASE_URL", "SUPABASE_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"]:
             monkeypatch.delenv(key, raising=False)
         settings = Settings(_env_file=None)
         assert settings.SUPABASE_URL == ""
@@ -32,8 +32,6 @@ class TestConfigurationSystem:
         assert settings.GEMINI_API_KEY == ""
         assert settings.GROQ_API_KEY == ""
         assert settings.OPENROUTER_API_KEY == ""
-        assert settings.VEXA_API_KEY == ""
-        assert settings.VEXA_API_BASE == "http://localhost:18056"
         assert settings.CORS_ORIGINS == "http://localhost:5173"
 
     def test_settings_has_property_methods(self):

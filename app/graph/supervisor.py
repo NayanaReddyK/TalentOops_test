@@ -39,6 +39,24 @@ async def run_pipeline(goal: str, standard: str | None = None, corpus: list[dict
     log_event(run_id, source="manager", event_type="run_started",
               payload={"goal": goal, "standard": standard})
 
+    # Persist frozen rubric into DB for this run_id
+    from app.services.database import db
+    try:
+        await db.insert("rubrics", {
+            "run_id": run_id,
+            "role_title": goal,
+            "standard": standard or goal,
+            "competencies": [
+                {"competency_id": "system_design", "keywords": ["architecture", "scaling", "distributed", "system"]},
+                {"competency_id": "python_backend", "keywords": ["python", "fastapi", "async", "django", "api"]},
+                {"competency_id": "databases", "keywords": ["sql", "postgres", "redis", "query", "orm"]},
+                {"competency_id": "problem_solving", "keywords": ["algorithm", "debug", "performance", "trade-off"]}
+            ],
+            "difficulty_level": "L2"
+        })
+    except Exception:
+        pass
+
     from app.graph.state import WorkflowStage
     initial: PipelineState = {
         "run_id": run_id,

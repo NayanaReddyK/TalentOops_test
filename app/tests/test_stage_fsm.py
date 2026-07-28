@@ -29,8 +29,8 @@ def test_determine_next_stage_sequence():
     assert target == "scheduling"
 
     stage, target = determine_next_stage(WorkflowStage.SCHEDULING, ["sourcing", "screening", "scheduling"])
-    assert stage == WorkflowStage.INTERVIEWING
-    assert target == "interviewer"
+    assert stage == WorkflowStage.WAITING_FOR_INTERVIEW
+    assert target == "FINISH"
 
     stage, target = determine_next_stage(WorkflowStage.INTERVIEWING, ["sourcing", "screening", "scheduling", "interviewer"])
     assert stage == WorkflowStage.EVALUATION

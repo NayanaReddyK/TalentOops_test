@@ -60,18 +60,25 @@ def build_manager_debrief_script(run_id: str, final_state: dict[str, Any]) -> st
 
 async def create_manager_debrief_session(
     interview_id: str | None = None,
-    candidate_id: str = "c-alex",
+    candidate_id: str | None = None,
     run_id: str | None = None,
     final_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a self-hosted debrief room for HR and assemble knowledge context."""
+    # Support positional passing of final_state if candidate_id is passed as a dict
+    if isinstance(candidate_id, dict) and final_state is None:
+        final_state = candidate_id
+        candidate_id = None
+
+    top_cand = (final_state or {}).get("top_candidate") or candidate_id
+    if not isinstance(top_cand, str) or not top_cand:
+        top_cand = "c-candidate"
+
     effective_id = interview_id or run_id or "iv-default"
 
     # 1. Fetch scorecard and candidate evaluation report from Supabase
     scorecards = await db.query("scorecards", interview_id=effective_id)
     scorecard_data = scorecards[0] if scorecards else {}
-
-    top_cand = (final_state or {}).get("top_candidate") or candidate_id
 
     knowledge_context = {
         "interview_id": effective_id,
@@ -101,10 +108,9 @@ async def create_manager_debrief_session(
     room_url = room.room_url
 
     payload = {
-        "debrief_id":       f"debrief-{effective_id}",
         "interview_id":     effective_id,
         "candidate_id":     top_cand,
-        "room_url":         room_url,     # was meet_link
+        "room_url":         room_url,
         "status":           "Manager Agent Waiting",
         "summary":          f"HR Debrief Session ready for candidate {top_cand}.",
         "knowledge_context": knowledge_context,
@@ -122,7 +128,7 @@ async def create_manager_debrief_session(
 
 
 async def process_hr_debrief_turn(interview_id: str, hr_question: str) -> dict[str, Any]:
-    """Process HR's spoken/text question during the Manager Agent debrief call."""
+    """Process HR's spoken/text question during the Manager Agent debrief call via vector RAG & LLM."""
     sessions = await db.query("hr_debrief_sessions", interview_id=interview_id)
     session_data = sessions[0] if sessions else {}
     kc = session_data.get("knowledge_context", {})
@@ -132,52 +138,94 @@ async def process_hr_debrief_turn(interview_id: str, hr_question: str) -> dict[s
     comps = kc.get("detailed_competencies", [])
     metrics = kc.get("behavioral_metrics", {})
 
-    q_lower = hr_question.lower()
-
-    # Evidence-backed RAG matching
-    matched_quotes = []
+    # 1. Keyword matching over stored transcript turns
+    q_words = [w.lower() for w in hr_question.split() if len(w) > 3]
+    kw_matched = []
     for t in turns:
         q_text = t.get("question", "")
         a_text = t.get("candidate_answer", "")
         notes  = t.get("evaluator_notes", "")
-        if any(word in (q_text + " " + a_text + " " + notes).lower() for word in q_lower.split() if len(word) > 3):
-            matched_quotes.append((q_text, a_text, notes))
+        blob_lower = (q_text + " " + a_text + " " + notes).lower()
+        if any(w in blob_lower for w in q_words):
+            kw_matched.append((q_text, a_text, notes))
 
-    if matched_quotes:
-        q_text, a_text, notes = matched_quotes[0]
-        response_text = (
-            f"In response to your query regarding interview turn: when asked '{q_text}', the candidate responded: '{a_text}'. "
-            f"Evaluator note: {notes}"
-        )
-    elif any(term in q_lower for term in ["confidence", "behavior", "engagement", "clarity"]):
-        conf_pct = int((metrics.get("confidence_level", 0.88)) * 100)
-        response_text = (
-            f"Regarding candidate behavior and confidence: Candidate {kc.get('candidate_id', 'c-1')} "
-            f"demonstrated an estimated confidence level of {conf_pct}%. They spoke clearly and maintained high engagement."
-        )
-    elif any(term in q_lower for term in ["recommendation", "hire", "decision", "overall", "summary", "score"]):
-        response_text = (
-            f"Our overall recommendation for interview {interview_id} is **{rec.get('hiring_recommendation', 'Hire')}** "
-            f"with a suitability score of {rec.get('overall_suitability_score', 88.0)}%. {rec.get('executive_summary', '')}"
-        )
-    else:
-        matched_comp = [c for c in comps if c.get("competency_id", "").lower() in q_lower or any(kw.lower() in q_lower for kw in c.get("keywords", []))]
-        if matched_comp:
-            c = matched_comp[0]
-            response_text = f"Regarding {c.get('competency_id', '').replace('_', ' ')}: candidate scored {c.get('technical_accuracy', 85)}% accuracy with strengths: {', '.join(c.get('strengths', ['Solid performance']))}."
-        elif any(word in q_lower for word in ["tell me", "what about", "how about", "did they", "experience", "skill", "know", "use"]):
-            response_text = "Insufficient evidence in stored interview transcript for that topic."
+    # 2. Vector RAG matching over stored transcript turns
+    from app.embeddings.embedder import get_embedder, cosine
+    embedder = get_embedder()
+
+    hr_vec = embedder.embed(hr_question)
+    turn_sims = []
+    for t in turns:
+        q_text = t.get("question", "")
+        a_text = t.get("candidate_answer", "")
+        notes  = t.get("evaluator_notes", "")
+        turn_blob = f"Question: {q_text}\nAnswer: {a_text}\nEvaluator Notes: {notes}"
+        blob_vec = embedder.embed(turn_blob)
+        sim = cosine(hr_vec, blob_vec)
+        turn_sims.append((sim, turn_blob, q_text, a_text, notes))
+
+    turn_sims.sort(key=lambda x: x[0], reverse=True)
+    top_retrieved = turn_sims[:2] if turn_sims else []
+
+    retrieved_evidence = "\n\n".join([t[1] for t in top_retrieved if t[0] > 0])
+    if not retrieved_evidence and kw_matched:
+        retrieved_evidence = f"Question: {kw_matched[0][0]}\nAnswer: {kw_matched[0][1]}\nNotes: {kw_matched[0][2]}"
+
+    # LLM Synthesis using MANAGER_DEBRIEF_SYSTEM_PROMPT
+    user_prompt = f"""
+    Stored Knowledge Context:
+    Candidate ID: {kc.get('candidate_id', 'Candidate')}
+    Final Recommendation: {rec}
+    Behavioral Metrics: {metrics}
+    Detailed Competencies: {comps}
+    Retrieved Relevant Transcript Evidence:
+    {retrieved_evidence}
+
+    <untrusted-hr-query>
+    {hr_question}
+    </untrusted-hr-query>
+
+    Synthesize a concise, oral debrief response grounded ONLY in the retrieved evidence above.
+    """
+
+    try:
+        from app.services.llm_clients import openrouter_chat, groq_chat
+        from app.config import settings
+
+        messages = [
+            {"role": "system", "content": MANAGER_DEBRIEF_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
+            response_text = await groq_chat(messages)
+        elif settings.OPENROUTER_API_KEY:
+            response_text = await openrouter_chat(messages)
         else:
-            comp_summary = ", ".join([f"{c.get('competency_id')}: {c.get('technical_accuracy')}%" for c in comps[:2]])
-            response_text = (
-                f"For interview {interview_id}, candidate {kc.get('candidate_id', 'c-1')} achieved technical competency scores "
-                f"({comp_summary or '88% accuracy'}). Executive summary: {rec.get('executive_summary', 'Strong technical performance.')}"
-            )
+            from app.llm.client import get_llm_client
+            client = get_llm_client()
+            res = client.complete_json(MANAGER_DEBRIEF_SYSTEM_PROMPT, user_prompt, {"response": "string"})
+            response_text = res.get("response", "")
+        response_text = (response_text or "").strip()
+    except Exception as exc:
+        logger.warning("LLM debrief synthesis fallback triggered: %s", exc)
+        if kw_matched:
+            q_text, a_text, notes = kw_matched[0]
+            response_text = f"In response to query regarding turn '{q_text}': candidate responded '{a_text}'. Evaluator note: {notes}"
+        elif turns:
+            t0 = turns[0]
+            q_text, a_text, notes = t0.get("question", ""), t0.get("candidate_answer", ""), t0.get("evaluator_notes", "")
+            response_text = f"In response to query regarding turn '{q_text}': candidate responded '{a_text}'. Evaluator note: {notes}"
+        else:
+            response_text = f"Candidate achieved {rec.get('overall_suitability_score', 88.0)}% suitability with hiring recommendation **{rec.get('hiring_recommendation', 'Hire')}**. {rec.get('executive_summary', '')}"
 
     # Synthesize spoken audio for Manager Agent
-    from app.config import get_settings as _get_settings
-    tts = TTSService(provider=_get_settings().tts_provider)
-    audio_b64 = await tts.synthesize_speech_b64(response_text)
+    try:
+        from app.config import get_settings as _get_settings
+        tts = TTSService(provider=_get_settings().tts_provider)
+        audio_b64 = await tts.synthesize_speech_b64(response_text)
+    except Exception as tts_err:
+        logger.warning("TTS audio synthesis failed in debrief turn: %s", tts_err)
+        audio_b64 = ""
 
     return {
         "interview_id": interview_id,

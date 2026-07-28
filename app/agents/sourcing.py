@@ -32,28 +32,54 @@ def parse_pdf(path: str) -> str:
 
 
 
-from app.services.gdrive_service import extract_email_from_text, fetch_resumes_from_drive
 
-
-def extract_profile(text: str) -> dict[str, Any]:
+def extract_profile(text: str, file_name: str | None = None) -> dict[str, Any]:
     """Structured profile extraction via the LLM client."""
+    if not text or not isinstance(text, str) or not text.strip():
+        raise ValueError(f"Resume text is empty or invalid for file {file_name}")
+
+    from app.services.parser import extract_candidate_metadata, clean_candidate_name
+    meta = extract_candidate_metadata(text, file_name=file_name)
+
     llm = get_llm_client()
-    profile = llm.complete_json(
-        system="Extract a candidate profile from the resume text.",
-        user=text,
-        schema_hint={"name": "str", "email": "str", "skills": "list[str]", "years_experience": "int", "summary": "str"},
-    )
-    if not profile.get("email"):
-        profile["email"] = extract_email_from_text(text)
+    try:
+        profile = llm.complete_json(
+            system="Extract a candidate profile from the resume text.",
+            user=text,
+            schema_hint={"name": "str", "email": "str", "skills": "list[str]", "years_experience": "int", "summary": "str"},
+        )
+    except Exception:
+        profile = {}
+
+    extracted_name = profile.get("name") if isinstance(profile, dict) else ""
+    if not extracted_name or extracted_name == "Candidate":
+        extracted_name = meta.get("full_name") or clean_candidate_name(file_name)
+    else:
+        extracted_name = clean_candidate_name(extracted_name)
+
+    profile["name"] = extracted_name
+    profile["email"] = (profile.get("email") if isinstance(profile, dict) else None) or meta.get("email") or extract_email_from_text(text)
     return profile
 
 
 def _load_corpus(corpus: list[dict] | None) -> list[dict]:
-    """Load and validate candidate corpus from real resume files.
-
-    Raises ValueError if no corpus is supplied — no mock fallback.
-    """
+    """Load and validate candidate corpus from real resume files."""
     if not corpus:
+        import os
+        loaded_temp = []
+        if os.path.exists("temp_uploads"):
+            for fname in sorted(os.listdir("temp_uploads"), reverse=True):
+                fpath = os.path.join("temp_uploads", fname)
+                if os.path.isfile(fpath) and not fname.startswith("."):
+                    try:
+                        text = parse_pdf(fpath)
+                        email = extract_email_from_text(text)
+                        loaded_temp.append({"id": fname.rsplit(".", 1)[0], "text": text, "email": email})
+                    except Exception as exc:
+                        logger.error("Failed to load temp upload resume %s: %s", fname, exc)
+        if loaded_temp:
+            return loaded_temp
+
         logger.error(
             "run_sourcing called with no candidate corpus. "
             "Supply resume files via the `corpus` parameter. "
@@ -85,23 +111,30 @@ def run_sourcing(run_id: str, goal: str, corpus: list[dict] | None = None) -> di
     profiles: list[dict[str, Any]] = []
 
     for entry in _load_corpus(corpus):
-        profile = extract_profile(entry["text"])
-        context = scraper.enrich(f"https://example.com/{entry['id']}")
-        merged_skills = list({*(profile.get("skills") or []), *context.get("skills", [])})
+        try:
+            profile = extract_profile(entry["text"], file_name=entry.get("id"))
+            cand_name = profile.get("name") or "Candidate"
+            cand_email = profile.get("email") or entry.get("email") or f"{entry['id']}@example.com"
+            profile["name"] = cand_name
+            profile["email"] = cand_email
 
-        text_for_embed = f"{profile.get('summary', '')} {' '.join(merged_skills)}"
-        candidate_email = profile.get("email") or entry.get("email") or f"{entry['id']}@example.com"
-        profile["email"] = candidate_email
+            context = scraper.enrich(f"https://example.com/{entry['id']}", text_content=entry["text"])
+            merged_skills = list({*(profile.get("skills") or []), *context.get("skills", [])})
 
-        vector = embedder.embed(text_for_embed)
-        upsert_embedding(
-            run_id,
-            kind="candidate",
-            ref_id=entry["id"],
-            vector=vector,
-            metadata={"profile": profile, "email": candidate_email, "skills": merged_skills},
-        )
+            text_for_embed = f"{profile.get('summary', '')} {' '.join(merged_skills)}"
 
-        profiles.append({"id": entry["id"], "profile": profile, "email": candidate_email, "skills": merged_skills})
+            vector = embedder.embed(text_for_embed)
+            upsert_embedding(
+                run_id,
+                kind="candidate",
+                ref_id=entry["id"],
+                vector=vector,
+                metadata={"profile": profile, "name": cand_name, "email": cand_email, "skills": merged_skills},
+            )
+
+            profiles.append({"id": entry["id"], "name": cand_name, "profile": profile, "email": cand_email, "skills": merged_skills})
+        except Exception as exc:
+            logger.error("Error processing resume candidate '%s' during sourcing: %s", entry.get("id"), exc)
+            continue
 
     return {"candidates": profiles, "count": len(profiles)}

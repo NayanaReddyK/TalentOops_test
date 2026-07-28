@@ -5,7 +5,7 @@ from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.agents.consent_agent import ConsentAgent, parse_consent_intent
 from app.agents.evaluator_agent import EvaluatorAgent
-from app.services.multi_agent_coordinator import MultiAgentCoordinator, MeetingState
+from app.services.multi_agent_coordinator import MultiAgentCoordinator, RoomSessionState
 
 
 def test_parse_consent_intent_granted():
@@ -27,7 +27,7 @@ async def test_consent_agent_process_response_granted():
         res = await agent.process_response(
             candidate_id="cand-100",
             response_text="Yes, I consent to the recording.",
-            meet_link="https://meet.google.com/test-meet",
+            room_id="room-123",
             run_id="run-test"
         )
         assert res["consent_granted"] is True
@@ -42,7 +42,7 @@ async def test_consent_agent_process_response_denied():
         res = await agent.process_response(
             candidate_id="cand-101",
             response_text="No, I do not want to be recorded.",
-            meet_link="https://meet.google.com/test-meet",
+            room_id="room-123",
             run_id="run-test"
         )
         assert res["consent_granted"] is False
@@ -87,7 +87,7 @@ async def test_multi_agent_coordinator_flow_consent_granted():
     coord = MultiAgentCoordinator(
         candidate_id="cand-200",
         role_id="role-backend",
-        meet_link="https://meet.google.com/exact-meet-link",
+        room_id="room-123",
         run_id="run-200"
     )
 
@@ -96,21 +96,14 @@ async def test_multi_agent_coordinator_flow_consent_granted():
         "competencies": [{"competency_id": "system_design", "keywords": ["sharding", "kafka"]}]
     }
 
-    with patch("app.services.multi_agent_coordinator.get_vexa_client") as mock_vexa, \
-         patch("app.services.multi_agent_coordinator.db.query", side_effect=lambda table, **kw: [rubric] if table == "rubrics" else [{"id": "cand-200", "name": "Sam"}]), \
+    with patch("app.services.multi_agent_coordinator.db.query", side_effect=lambda table, **kw: [rubric] if table == "rubrics" else [{"id": "cand-200", "name": "Sam"}]), \
          patch("app.services.multi_agent_coordinator.ConsentAgent.process_response", return_value={"consent_granted": True, "status": "CONSENT_GRANTED"}), \
          patch("app.services.multi_agent_coordinator.EvaluatorAgent.evaluate_transcript", return_value={"scorecard": {"overall_fit": 0.9}, "scorecard_id": "sc-99"}), \
          patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384), \
          patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384]):
 
-        from unittest.mock import AsyncMock
-        mock_bot = MagicMock()
-        mock_bot.join_meeting = AsyncMock(return_value={"status": "joined"})
-        mock_bot.leave_meeting = AsyncMock(return_value={"status": "left"})
-        mock_vexa.return_value = mock_bot
-
         res = await coord.run_session(candidate_turns=["I built distributed queues using Kafka."])
-        assert res["state"] == MeetingState.EVALUATION_COMPLETE.name
+        assert res["state"] == RoomSessionState.EVALUATION_COMPLETE.name
         assert res["consent_granted"] is True
         assert "scorecard" in res
 
@@ -120,39 +113,15 @@ async def test_multi_agent_coordinator_flow_consent_denied():
     coord = MultiAgentCoordinator(
         candidate_id="cand-201",
         role_id="role-backend",
-        meet_link="https://meet.google.com/exact-meet-link",
+        room_id="room-123",
         run_id="run-201"
     )
 
-    with patch("app.services.multi_agent_coordinator.get_vexa_client") as mock_vexa, \
-         patch("app.services.multi_agent_coordinator.ConsentAgent.process_response", return_value={"consent_granted": False, "status": "CONSENT_DENIED"}), \
+    with patch("app.services.multi_agent_coordinator.ConsentAgent.process_response", return_value={"consent_granted": False, "status": "CONSENT_DENIED"}), \
          patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384), \
          patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384]):
-
-        from unittest.mock import AsyncMock
-        mock_bot = MagicMock()
-        mock_bot.join_meeting = AsyncMock(return_value={"status": "joined"})
-        mock_bot.leave_meeting = AsyncMock(return_value={"status": "left"})
-        mock_vexa.return_value = mock_bot
 
         res = await coord.run_session(candidate_turns=["I refuse recording."])
-        assert res["state"] == MeetingState.CONSENT_DENIED.name
+        assert res["state"] == RoomSessionState.CONSENT_DENIED.name
         assert res["consent_granted"] is False
         assert "Interview terminated early due to consent refusal" in res["message"]
-
-
-@pytest.mark.asyncio
-async def test_start_meet_session_endpoint():
-    with patch("app.services.multi_agent_coordinator.MultiAgentCoordinator.run_session", return_value={"state": "EVALUATION_COMPLETE", "consent_granted": True}), \
-         patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384), \
-         patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384]):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post("/start_meet_session", json={
-                "candidate_id": "cand-300",
-                "role_id": "role-devops",
-                "meet_link": "https://meet.google.com/api-test-meet"
-            })
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["state"] == "EVALUATION_COMPLETE"

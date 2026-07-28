@@ -1,7 +1,6 @@
 """Communication capability: candidate-facing emails.
 
-Email invitations now include a TalentOops Interview Room URL
-instead of a Google Meet link.
+Email invitations include a TalentOops Interview Room URL.
 """
 from __future__ import annotations
 
@@ -9,9 +8,20 @@ import logging
 from typing import Any
 
 from app.agents.email_client import get_email_client
+from app.services.database import db
 from app.supabase_client import log_event
 
 logger = logging.getLogger("talentops.communication")
+
+DECISION_COPY = {
+    "STRONG_HIRE": "Strong Hire — Moving forward to offer stage",
+    "HIRE": "Hire — Proceeding to final team review",
+    "HOLD_FOR_REVIEW": "Under Review — We are currently completing interviews for this position",
+    "REJECT": "Application Status Update — We will not be moving forward at this time",
+}
+
+
+from app.services.parser import clean_candidate_name
 
 
 def _invite_body(
@@ -19,6 +29,7 @@ def _invite_body(
     slot: str,
     room_url: str | None = None,
 ) -> tuple[str, str]:
+    display_name = clean_candidate_name(candidate)
     subject = "Interview invitation — next steps"
     room_info = (
         f"TalentOops Interview Room: {room_url}\n"
@@ -27,7 +38,7 @@ def _invite_body(
         else ""
     )
     body = (
-        f"Hi {candidate},\n\n"
+        f"Hi {display_name},\n\n"
         f"Thank you for your application. We'd like to invite you to an interview.\n"
         f"Proposed time: {slot}.\n\n"
         f"{room_info}"
@@ -39,9 +50,10 @@ def _invite_body(
 
 
 def _rejection_body(candidate: str) -> tuple[str, str]:
+    display_name = clean_candidate_name(candidate)
     subject = "Update on your application"
     body = (
-        f"Hi {candidate},\n\n"
+        f"Hi {display_name},\n\n"
         f"Thank you for taking the time to apply. After careful review against a "
         f"consistent evaluation standard, we won't be moving forward at this time.\n\n"
         f"We wish you the best in your search.\n\nRegards,\nThe Hiring Team"
@@ -50,25 +62,27 @@ def _rejection_body(candidate: str) -> tuple[str, str]:
 
 
 def _decision_body(candidate: str, decision: str) -> tuple[str, str]:
-    subject = f"Interview outcome — {decision}"
+    display_name = clean_candidate_name(candidate)
+    human_decision = DECISION_COPY.get(decision.upper(), decision)
+    subject = f"Interview outcome — {human_decision}"
     body = (
-        f"Hi {candidate},\n\n"
-        f"Following your interview, the current outcome is: {decision}.\n\n"
+        f"Hi {display_name},\n\n"
+        f"Following your interview, the current outcome is: {human_decision}.\n\n"
         f"Regards,\nThe Hiring Team"
     )
     return subject, body
 
 
-from app.services.email_handler import _dispatch_smtp_email
-
-
 def _address_for(candidate: str, candidate_email: str | None = None) -> str:
     if candidate_email and "@" in candidate_email:
         return candidate_email
-    if "@" in candidate:
+    if candidate and "@" in candidate:
         return candidate
-    safe_name = candidate.lower().replace(" ", ".")
-    return f"{safe_name}@example.com"
+    if candidate and isinstance(candidate, str):
+        safe_name = candidate.lower().replace(" ", ".")
+        logger.warning("No explicit email provided for candidate '%s', falling back to %s@example.com", candidate, safe_name)
+        return f"{safe_name}@example.com"
+    raise ValueError(f"Invalid or missing candidate email for '{candidate}'. Cannot send email.")
 
 
 def _send(
@@ -79,14 +93,22 @@ def _send(
     body: str,
     candidate_email: str | None = None,
 ) -> dict[str, Any]:
-    client = get_email_client()
     target_address = _address_for(candidate, candidate_email)
-    msg = client.send(to=target_address, subject=subject, body=body)
+    client = get_email_client()
 
-    # Attempt real SMTP dispatch if configured
-    from app.config import settings
-    if settings.SMTP_SERVER and not settings.is_offline_mode:
-        _dispatch_smtp_email(target_address, subject, body)
+    # Idempotency check: Check if email of this kind was already sent to target_address in this run
+    try:
+        events = db.query_sync("events", run_id=run_id, source="communication", event_type="email_sent")
+        for ev in events:
+            p = ev.get("payload", {})
+            if p.get("kind") == kind and p.get("to") == target_address:
+                logger.warning("Idempotency guard: Email '%s' already sent to %s for run %s. Skipping duplicate send.", kind, target_address, run_id)
+                return {"kind": kind, "to": target_address, "message_id": p.get("message_id", "duplicate-skipped"), "subject": subject, "skipped": True}
+    except Exception as exc:
+        logger.debug("Idempotency check event query failed: %s", exc)
+
+    # client.send() already dispatches over SMTPEmailClient when configured
+    msg = client.send(to=target_address, subject=subject, body=body)
 
     log_event(
         run_id, source="communication", event_type="email_sent",

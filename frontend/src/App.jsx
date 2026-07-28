@@ -10,8 +10,8 @@ import HREvaluationDashboard from './components/HREvaluationDashboard';
 import InterviewRoom from './components/InterviewRoom';
 
 // Initialize Supabase Client
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://qzthddhmxdcocikdhumh.supabase.co';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF6dGhkZGhteGRjb2Npa2RodW1oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxNjc4MjAsImV4cCI6MjA5OTc0MzgyMH0.VJbR0Ad8t9SgsAPc9XyFM3bkLrPocmEekjOnnPwoJss';
 const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
@@ -26,7 +26,7 @@ function App() {
   const [roleId] = useState(urlParams.get('roleId') || 'r1');
   const [candidateId] = useState(urlParams.get('candidateId') || 'c1');
   const [interviewId, setInterviewId] = useState(urlParams.get('interviewId') || 'iv-alex');
-  const [activeTab, setActiveTab] = useState('live'); // 'live' | 'hr'
+  const [activeTab, setActiveTab] = useState(urlParams.get('tab') || 'live'); // 'live' | 'hr'
 
   // Pipeline execution state
   const [goal, setGoal] = useState('Hire a Senior Backend Engineer (Python, FastAPI, Postgres)');
@@ -51,10 +51,17 @@ function App() {
       let corpus = [];
 
       if (selectedFile) {
+        const fileBase64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(',')[1] || reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(selectedFile);
+        });
+
         const uploadRes = await fetch(`${API_BASE}/upload_resume`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file_name: selectedFile.name, content: await selectedFile.text() })
+          body: JSON.stringify({ file_name: selectedFile.name, content: fileBase64 })
         });
         const uploadData = await uploadRes.json();
         if (uploadData.path) {
@@ -76,7 +83,7 @@ function App() {
       setRunResult(data);
 
       if (data.final_state) {
-        setCompletedNodes(data.final_state.completed || ['sourcing', 'screening', 'scheduling', 'interviewer', 'reporting']);
+        setCompletedNodes(data.final_state.completed || ['sourcing', 'screening', 'scheduling']);
         if (data.final_state.top_candidate) {
           setInterviewId(`iv-${data.final_state.top_candidate}`);
         }
@@ -105,6 +112,7 @@ function App() {
   };
 
   const managerDebriefInfo = runResult?.final_state?.report?.manager_debrief;
+  const candidateRoomUrl = runResult?.final_state?.results?.scheduling?.room_url || runResult?.room_url || runResult?.results?.scheduling?.room_url;
 
   return (
     <div className="min-h-screen bg-[var(--color-canvas)] text-[var(--color-text-primary)] p-8">
@@ -114,7 +122,7 @@ function App() {
             TalentOps Autonomous Hiring Ecosystem
           </h1>
           <p className="text-[var(--color-text-secondary)] font-mono text-sm mt-2">
-            Real-Time Multi-Agent Hiring: Candidate Resume PDF → Real Emails & Meet → Live Interview → Manager AI Debrief
+            Real-Time Multi-Agent Hiring: Candidate Resume PDF → In-Platform Room → Live Interview → Manager AI Debrief
           </p>
         </div>
         
@@ -131,7 +139,8 @@ function App() {
             roleId={roleId} 
             candidateId={candidateId}
             interviewId={interviewId}
-            onDeployed={(id) => setInterviewId(id)} 
+            onDeployed={(id) => setInterviewId(id)}
+            onEnded={() => setActiveTab('hr')} 
           />
         </div>
       </header>
@@ -195,9 +204,36 @@ function App() {
             <div className="glass-panel p-5 space-y-3 bg-cyan-950/20 border-cyan-500/30">
               <div className="flex justify-between items-center text-xs font-mono border-b border-cyan-500/20 pb-2">
                 <div><span className="text-cyan-400 font-bold">Run ID:</span> {runResult.run_id}</div>
-                <div><span className="text-purple-400 font-bold">Decision:</span> <span className="text-green-400 font-bold px-2 py-0.5 rounded bg-green-500/20">{runResult.final_state?.report?.decision || 'ADVANCE'}</span></div>
-                <div><span className="text-cyan-400 font-bold">Top Candidate:</span> {runResult.final_state?.top_candidate || 'Priya Rao'}</div>
+                <div><span className="text-purple-400 font-bold">Decision:</span> <span className="text-amber-400 font-bold px-2 py-0.5 rounded bg-amber-500/20">{runResult.final_state?.stage || 'WAITING_FOR_INTERVIEW'}</span></div>
+                <div><span className="text-cyan-400 font-bold">Top Candidate:</span> {runResult.final_state?.top_candidate || 'Candidate'}</div>
               </div>
+
+              {/* Candidate In-Platform Interview Room Card */}
+              {candidateRoomUrl && (
+                <div className="p-4 rounded-lg bg-gradient-to-r from-emerald-900/40 to-teal-900/40 border border-emerald-500/40 flex flex-col md:flex-row justify-between items-center gap-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
+                      <span>📹</span> Candidate In-Platform Interview Room
+                    </h3>
+                    <p className="text-xs text-gray-300 mt-1">
+                      WebRTC & WebSocket self-hosted interview room created for {runResult.final_state?.top_candidate || 'Candidate'}.
+                    </p>
+                    <div className="text-xs font-mono text-emerald-400 mt-1">
+                      Room Link: <a href={candidateRoomUrl} target="_blank" rel="noreferrer" className="underline">{candidateRoomUrl}</a>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <a
+                      href={candidateRoomUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs rounded-md shadow transition-all flex items-center gap-1"
+                    >
+                      <span>🚀</span> Join Candidate Interview Room
+                    </a>
+                  </div>
+                </div>
+              )}
 
               {/* Manager AI Debrief Meet Session Card */}
               {managerDebriefInfo && (
@@ -207,10 +243,10 @@ function App() {
                       <span>🧠</span> Manager AI Voice Debrief Session
                     </h3>
                     <p className="text-xs text-gray-300 mt-1">
-                      Join the Google Meet call to receive a real-time voice briefing from the AI Manager Agent.
+                      Receive a real-time voice briefing from the AI Manager Agent.
                     </p>
                     <div className="text-xs font-mono text-cyan-400 mt-1">
-                      Meet Link: <a href={managerDebriefInfo.meet_link} target="_blank" rel="noreferrer" className="underline">{managerDebriefInfo.meet_link}</a>
+                      Room Link: <a href={managerDebriefInfo.meet_link} target="_blank" rel="noreferrer" className="underline">{managerDebriefInfo.meet_link}</a>
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -221,7 +257,7 @@ function App() {
                       onClick={handleDeployManagerDebrief}
                       className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs rounded-md shadow transition-all flex items-center gap-1"
                     >
-                      <span>🎙️</span> Join Manager Meet Call
+                      <span>🎙️</span> Join Manager Room
                     </a>
                     {debriefDeployed && (
                       <span className="px-2 py-2 bg-green-500/20 text-green-400 text-xs font-mono rounded flex items-center">

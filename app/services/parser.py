@@ -40,8 +40,91 @@ class ParsedResume(BaseModel):
     file_name: str
     file_type: str
     email: str = ""
+    candidate_name: str = ""
     skills: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def clean_candidate_name(raw_name: str) -> str:
+    """Clean up a raw filename or text line to extract a candidate full name."""
+    if not raw_name:
+        return "Candidate"
+
+    # 1. Remove file extensions
+    cleaned = re.sub(r"\.(pdf|docx|doc|txt|md)$", "", str(raw_name).strip(), flags=re.IGNORECASE)
+
+    # 2. Remove UUID prefixes (hex 32 or standard 36-char uuid followed by _ or -)
+    cleaned = re.sub(r"^[a-fA-F0-9]{32}[_-]?", "", cleaned)
+    cleaned = re.sub(r"^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}[_-]?", "", cleaned)
+
+    # 3. Replace underscores/dashes with spaces first
+    cleaned = cleaned.replace("_", " ").replace("-", " ")
+
+    # 4. Remove common junk keywords
+    junk_patterns = [
+        r"\bAI[ -]?RESUME\b", r"\bRESUME\b", r"\bCV\b", r"\bCURRICULUM\b", r"\bVITAE\b",
+        r"\bSingle[ -]?P(age)?\b", r"\bDraft\b", r"\bFinal\b", r"\bCopy\b", r"\bUpload\b",
+        r"\bDocument\b", r"\bProfile\b"
+    ]
+    for pat in junk_patterns:
+        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE)
+
+    # 5. Strip non-alpha characters and collapse whitespace
+    cleaned = re.sub(r"[^a-zA-Z\s\.]", "", cleaned)
+    cleaned = " ".join(cleaned.split())
+
+    if cleaned and len(cleaned) >= 2:
+        return cleaned.title()
+    return "Candidate"
+
+
+def extract_candidate_metadata(resume_text: str, file_name: str | None = None) -> dict[str, str]:
+    """Extract candidate full name and email from top 10-15 lines of resume text."""
+    email = extract_email_from_text(resume_text or "")
+
+    extracted_name = ""
+    lines = [line.strip() for line in (resume_text or "").splitlines() if line.strip()]
+    top_lines = lines[:15]
+
+    ignore_words = {
+        "curriculum", "vitae", "resume", "cv", "summary", "experience", "education",
+        "profile", "contact", "page", "phone", "email", "skills", "projects", "senior",
+        "junior", "lead", "staff", "principal", "engineer", "developer", "architect",
+        "manager", "data", "software", "fullstack", "backend", "frontend"
+    }
+
+    for line in top_lines:
+        if "@" in line or "http" in line or "www." in line or "linkedin" in line or "github" in line:
+            continue
+        if re.search(r"\+?\d[\d\s-]{7,}", line):
+            continue
+
+        first_segment = re.split(r"\s*[-|\:\,]\s*", line)[0].strip()
+        words = first_segment.split()
+        if 1 <= len(words) <= 4:
+            clean_words = [re.sub(r"[^a-zA-Z]", "", w) for w in words]
+            clean_words = [w for w in clean_words if w]
+            if clean_words and not any(w.lower() in ignore_words for w in clean_words):
+                candidate_cand = " ".join(clean_words)
+                if len(candidate_cand) >= 2:
+                    extracted_name = candidate_cand.title()
+                    break
+
+    if not extracted_name and file_name:
+        extracted_name = clean_candidate_name(file_name)
+    elif not extracted_name:
+        extracted_name = "Candidate"
+    else:
+        extracted_name = clean_candidate_name(extracted_name)
+
+    if not email or "@" not in email:
+        safe_email_name = extracted_name.lower().replace(" ", ".")
+        email = f"{safe_email_name}@example.com"
+
+    return {
+        "full_name": extracted_name,
+        "email": email,
+    }
 
 
 def extract_email_from_text(text: str) -> str:
@@ -56,29 +139,43 @@ def extract_email_from_text(text: str) -> str:
 
 
 def parse_pdf_bytes(pdf_bytes: bytes) -> str:
-    """Extract text from raw PDF bytes using pypdf with fallback for mislabeled text files."""
+    """Extract text from raw PDF bytes using pypdf with fallback to pdfplumber."""
     for pypdf_log_name in ["pypdf", "pypdf._reader", "pypdf.filters", "pypdf.generic._data_structures"]:
         logging.getLogger(pypdf_log_name).setLevel(logging.ERROR)
 
-    if pdf_bytes.startswith(b"%PDF"):
+    is_pdf = pdf_bytes.startswith(b"%PDF") or b"%PDF-" in pdf_bytes[:1024]
+
+    if is_pdf:
+        extracted = ""
+        # 1. Primary parser: pypdf
         try:
             from pypdf import PdfReader
             reader = PdfReader(io.BytesIO(pdf_bytes))
-            extracted = "\n".join((page.extract_text() or "") for page in reader.pages)
-            if not extracted.strip():
-                raise ResumeParseError("Extracted text from resume is empty or missing")
-            return extracted
-        except ResumeParseError:
-            raise
+            pages = [(page.extract_text() or "") for page in reader.pages]
+            extracted = "\n".join(t for t in pages if t.strip()).strip()
         except Exception as e:
-            logger.warning("pypdf failed to parse PDF bytes: %s", e)
-            raise ResumeParseError("Failed to parse PDF content: Invalid or corrupt PDF binary structure") from e
+            logger.warning("pypdf failed to extract text from PDF: %s", e)
 
-    # Fallback for text files mislabeled with .pdf extension
+        # 2. Secondary fallback: pdfplumber
+        if not extracted or len(extracted) < 10:
+            try:
+                import pdfplumber
+                with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                    pages = [(page.extract_text() or "") for page in pdf.pages]
+                    extracted = "\n".join(t for t in pages if t.strip()).strip()
+            except Exception as e:
+                logger.warning("pdfplumber failed to extract text from PDF: %s", e)
+
+        if not extracted or not extracted.strip():
+            raise ResumeParseError("Could not extract text from PDF. Ensure PDF is not scanned/image-only.")
+
+        return extracted
+
+    # Fallback ONLY if file is a non-PDF plain text file
     try:
         text = pdf_bytes.decode("utf-8", errors="strict")
         if text.strip():
-            logger.info("Parsed text file mislabeled with .pdf extension as text")
+            logger.info("Parsed plain text file without PDF header")
             return text
     except Exception:
         pass
@@ -151,13 +248,16 @@ def parse_resume_bytes(
     if not raw_text or not raw_text.strip():
         raise ResumeParseError("Extracted text from resume is empty or missing")
 
-    email = extract_email_from_text(raw_text)
+    meta = extract_candidate_metadata(raw_text, file_name=file_name)
+    email = meta.get("email") or extract_email_from_text(raw_text)
+    candidate_name = meta.get("full_name") or clean_candidate_name(file_name)
 
     return ParsedResume(
         raw_text=raw_text,
         file_name=file_name,
         file_type=file_type,
         email=email,
+        candidate_name=candidate_name,
         metadata={"content_length": len(content), "char_count": len(raw_text)}
     )
 

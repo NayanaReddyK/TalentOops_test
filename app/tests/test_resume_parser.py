@@ -49,6 +49,7 @@ def test_parse_pdf_bytes():
     assert isinstance(result, ParsedResume)
     assert result.file_type == "pdf"
     assert "Jane Doe" in result.raw_text
+    assert result.email == "jane@example.com"
 
 
 def test_parse_blank_pdf_bytes_raises_error(tmp_path):
@@ -67,7 +68,7 @@ def test_parse_blank_pdf_bytes_raises_error(tmp_path):
     with open(pdf_path, "rb") as f:
         pdf_bytes = f.read()
 
-    with pytest.raises(ResumeParseError, match="empty or missing"):
+    with pytest.raises(ResumeParseError, match="Could not extract text from PDF"):
         parse_resume_bytes(pdf_bytes, file_name="blank.pdf")
 
 
@@ -86,3 +87,38 @@ def test_corrupt_pdf_bytes_raises_parse_error():
     corrupt_pdf = b"%PDF-1.4\ncorrupted header and body data that fails parsing"
     with pytest.raises(ResumeParseError):
         parse_resume_bytes(corrupt_pdf, file_name="bad.pdf")
+
+
+from app.services.parser import extract_candidate_metadata, clean_candidate_name
+
+
+def test_extract_candidate_name_and_metadata():
+    resume_text = (
+        "SURYA PRAKASH - Senior Software Engineer\n"
+        "suryaprakash@example.com | +1 555-0199\n"
+        "Experienced Backend Engineer with 6+ years specializing in Python, FastAPI, and PostgreSQL."
+    )
+    meta = extract_candidate_metadata(resume_text, file_name="c8955ffd4d214e2eb7bdaffcf61dca52_AI-RESUME SURYA - SingleP.pdf")
+    assert meta["full_name"] == "Surya Prakash"
+    assert meta["email"] == "suryaprakash@example.com"
+    assert meta["full_name"] != "c8955ffd4d214e2eb7bdaffcf61dca52_AI-RESUME SURYA - SingleP"
+
+
+def test_clean_candidate_name_filename_cleaning():
+    raw_file = "c8955ffd4d214e2eb7bdaffcf61dca52_AI-RESUME SURYA - SingleP.pdf"
+    cleaned = clean_candidate_name(raw_file)
+    assert cleaned == "Surya"
+    assert "c8955ffd" not in cleaned
+    assert "AI-RESUME" not in cleaned
+    assert "SingleP" not in cleaned
+
+    uuid_file = "550e8400-e29b-41d4-a716-446655440000_Alex_Chen_CV.pdf"
+    cleaned_uuid = clean_candidate_name(uuid_file)
+    assert cleaned_uuid == "Alex Chen"
+
+
+def test_parsed_resume_contains_candidate_name():
+    raw_content = b"SURYA PRAKASH - Senior Software Engineer\nsurya@example.com\nPython dev"
+    res = parse_resume_bytes(raw_content, file_name="c8955ffd4d214e2eb7bdaffcf61dca52_AI-RESUME SURYA - SingleP.pdf")
+    assert res.candidate_name == "Surya Prakash"
+    assert res.email == "surya@example.com"

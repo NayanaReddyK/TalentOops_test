@@ -26,10 +26,20 @@ router = APIRouter(prefix="/rooms", tags=["rooms"])
 @router.post("/create", response_model=CreateRoomResponse)
 async def create_room(req: CreateRoomRequest) -> dict[str, Any]:
     """Create a new self-hosted interview room and return its URL."""
+    import uuid as _uuid
+    resolved_run_id = req.run_id or f"run-room-{_uuid.uuid4().hex[:8]}"
     room = await room_manager.create_room(
         candidate_id=req.candidate_id,
         interview_id=req.interview_id,
-        metadata={"slot_iso": req.slot_iso, **(req.metadata or {})},
+        run_id=resolved_run_id,
+        metadata={
+            "slot_iso":          req.slot_iso,
+            # BUG-15/20: persist role_id, run_id, duration so session reads them correctly
+            "role_id":           req.role_id,
+            "run_id":            resolved_run_id,
+            "duration_minutes":  req.duration_minutes,
+            **(req.metadata or {}),
+        },
     )
     return {
         "room_id":  room.room_id,
@@ -49,13 +59,19 @@ async def get_room(room_id: str) -> dict[str, Any]:
 
 @router.post("/{room_id}/end")
 async def end_room(room_id: str) -> dict[str, Any]:
-    """Close a room session (idempotent)."""
+    """Close a room session, evaluate stored transcript, generate scorecard, and transition status (idempotent)."""
+    from app.services.database import db
     room = room_manager.get_room(room_id)
     if room is None:
-        # Already closed or never existed — treat as success
-        return {"status": "already_closed", "room_id": room_id}
-    await room_manager.close_room(room_id)
-    return {"status": "closed", "room_id": room_id}
+        try:
+            db_rooms = await db.query("interview_rooms", room_id=room_id)
+            if not db_rooms:
+                return {"status": "already_closed", "room_id": room_id}
+        except Exception:
+            return {"status": "already_closed", "room_id": room_id}
+
+    res = await room_manager.close_room(room_id)
+    return res
 
 
 # WebSocket endpoint — registered separately in main.py so FastAPI can handle

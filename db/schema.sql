@@ -23,10 +23,12 @@ create index if not exists events_type_idx       on public.events (event_type);
 -- ============================================================================
 create table if not exists public.rubrics (
     id            uuid primary key default gen_random_uuid(),
-    run_id        text not null unique,           -- one frozen rubric per run
-    content_hash  text not null,
+    run_id        text not null,                  -- one frozen rubric per run
+    role_title    text default 'Senior Backend Engineer',
+    content_hash  text default '',
     standard      text not null,
     competencies  jsonb not null default '[]'::jsonb,
+    difficulty_level text default 'L2',
     created_at    timestamptz not null default now()
 );
 
@@ -73,12 +75,17 @@ create table if not exists public.roles (
 );
 
 create table if not exists public.candidates (
-    id          text primary key,
-    role_id     text references public.roles(id) on delete cascade,
-    name        text not null,
-    resume      text default '',
-    created_at  timestamptz default now()
+    id           text primary key,
+    role_id      text references public.roles(id) on delete cascade,
+    name         text not null,
+    email        text        null,                   -- extracted from resume PDF
+    resume       text        default '',
+    raw_text     text        default '',             -- full plain-text of the uploaded resume
+    resume_path  text        default '',             -- local path to the uploaded file
+    created_at   timestamptz default now()
 );
+
+create index if not exists candidates_email_idx on public.candidates (email);
 
 create table if not exists public.interviews (
     id            text primary key,

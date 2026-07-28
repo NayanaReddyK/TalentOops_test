@@ -11,10 +11,12 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "nvidia/llama-3.1-nemotron-70b-instruct:free"
 
 
-async def _post(url: str, key: str, model: str, messages: list[dict], json_mode: bool) -> str:
+async def _post(url: str, key: str, model: str, messages: list[dict], json_mode: bool, max_tokens: int | None = None) -> str:
     body: dict = {"model": model, "messages": messages}
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+    if max_tokens:
+        body["max_tokens"] = max_tokens
     last: Exception | None = None
     for attempt in range(3):
         try:
@@ -28,9 +30,9 @@ async def _post(url: str, key: str, model: str, messages: list[dict], json_mode:
     raise last  # type: ignore[misc]
 
 
-async def groq_chat(messages: list[dict], json_mode: bool = False) -> str:
-    return await _post(GROQ_URL, settings.GROQ_API_KEY, GROQ_MODEL, messages, json_mode)
+async def groq_chat(messages: list[dict], json_mode: bool = False, max_tokens: int | None = None) -> str:
+    return await _post(GROQ_URL, settings.GROQ_API_KEY, GROQ_MODEL, messages, json_mode, max_tokens)
 
 
-async def openrouter_chat(messages: list[dict], json_mode: bool = False) -> str:
-    return await _post(OPENROUTER_URL, settings.OPENROUTER_API_KEY, OPENROUTER_MODEL, messages, json_mode)
+async def openrouter_chat(messages: list[dict], json_mode: bool = False, max_tokens: int | None = None) -> str:
+    return await _post(OPENROUTER_URL, settings.OPENROUTER_API_KEY, OPENROUTER_MODEL, messages, json_mode, max_tokens)

@@ -30,52 +30,35 @@ def patch_room_manager(monkeypatch):
 
 
 class TestSchedulingAgent:
-    def test_no_candidate_returns_no_booking(self):
+    @pytest.mark.asyncio
+    async def test_no_candidate_returns_no_booking(self):
         from app.agents.scheduling import run_scheduling
-        result = run_scheduling(run_id="run-001", top_candidate=None)
-        assert result["status"] == "no_booking"
+        with pytest.raises(ValueError, match="No top candidate provided"):
+            await run_scheduling(run_id="run-001", top_candidate=None)
 
-    def test_returns_room_url(self, monkeypatch):
-        """Scheduling with a real candidate should return a room URL."""
+    @pytest.mark.asyncio
+    async def test_returns_room_url(self, monkeypatch):
         from app.agents.scheduling import run_scheduling
+        from unittest.mock import AsyncMock
 
-        # Patch asyncio.run / get_event_loop to return a fake room
-        import uuid
-        fake_room_id = str(uuid.uuid4())
+        mock_db = AsyncMock(return_value=[{"id": "alice-smith", "email": "alice@example.com"}])
+        monkeypatch.setattr("app.agents.scheduling.db.query", mock_db)
 
-        class FakeRoom:
-            room_id  = fake_room_id
-            room_url = f"http://localhost:8000/interview/{fake_room_id}"
-
-        async def _fake_create(*args, **kwargs):
-            return FakeRoom()
-
-        import app.rooms.room_manager as rm_mod
-        monkeypatch.setattr(rm_mod.room_manager, "create_room", _fake_create)
-
-        import asyncio
-        # run_scheduling is sync, but it calls asyncio.run internally
-        # Monkeypatch asyncio.run to return our fake room directly
-        monkeypatch.setattr(asyncio, "run", lambda coro: asyncio.get_event_loop().run_until_complete(coro))
-
-        result = run_scheduling(run_id="run-sched", top_candidate="Alice Smith")
+        result = await run_scheduling(run_id="run-sched", top_candidate="Alice Smith", candidate_email="alice@example.com")
         assert result["status"] == "booked"
         assert "room_url" in result
         assert "room_id" in result
         assert result["candidate_id"] == "alice-smith"
+        assert result["candidate_email"] == "alice@example.com"
 
-    def test_candidate_id_normalised(self, monkeypatch):
-        """Candidate name should be slug-normalised for the candidate_id."""
+    @pytest.mark.asyncio
+    async def test_candidate_id_normalised(self, monkeypatch):
         from app.agents.scheduling import run_scheduling
-        import asyncio
-        import app.rooms.room_manager as rm_mod
+        from unittest.mock import AsyncMock
 
-        class FakeRoom:
-            room_id  = "r-1"
-            room_url = "http://localhost:8000/interview/r-1"
+        mock_db = AsyncMock(return_value=[{"id": "john-doe", "email": "john@example.com"}])
+        monkeypatch.setattr("app.agents.scheduling.db.query", mock_db)
 
-        monkeypatch.setattr(rm_mod.room_manager, "create_room", lambda **kw: FakeRoom())
-        monkeypatch.setattr(asyncio, "run", lambda coro: FakeRoom())
-
-        result = run_scheduling(run_id="run-002", top_candidate="John Doe")
+        result = await run_scheduling(run_id="run-002", top_candidate="John Doe", candidate_email="john@example.com")
         assert result.get("candidate_id") == "john-doe"
+        assert result.get("candidate_email") == "john@example.com"

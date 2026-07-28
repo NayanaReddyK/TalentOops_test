@@ -160,11 +160,13 @@ class RoomManager:
         session.room.status = status
         now_utc = datetime.now(timezone.utc)
 
-        update_data: dict[str, Any] = {"status": status.value}
+        # Map internal EVALUATION_COMPLETE status to DB-valid 'COMPLETED' enum
+        db_status = "COMPLETED" if status == RoomStatus.EVALUATION_COMPLETE else status.value
+        update_data: dict[str, Any] = {"status": db_status}
         if status == RoomStatus.ACTIVE and not session.room.started_at:
             session.room.started_at = now_utc
             update_data["started_at"] = now_utc.isoformat()
-        elif status == RoomStatus.COMPLETED and not session.room.ended_at:
+        elif status in (RoomStatus.COMPLETED, RoomStatus.EVALUATION_COMPLETE) and not session.room.ended_at:
             session.room.ended_at = now_utc
             update_data["ended_at"] = now_utc.isoformat()
 
@@ -182,29 +184,128 @@ class RoomManager:
 
     # ── Teardown ──────────────────────────────────────────────────────────────
 
-    async def close_room(self, room_id: str) -> None:
-        """Complete a room session and clean up in-memory state."""
+    async def close_room(self, room_id: str) -> dict[str, Any]:
+        """Complete a room session, run EvaluatorAgent on stored transcript, and clean up state."""
         session = self._sessions.get(room_id)
-        if not session:
-            return
+        room = session.room if session else None
 
-        # Cancel any running agent task
-        if session.agent_task and not session.agent_task.done():
+        if not room:
+            try:
+                db_rooms = await db.query("interview_rooms", room_id=room_id)
+                if db_rooms:
+                    r = db_rooms[0]
+                    room = InterviewRoom(
+                        room_id=r["room_id"],
+                        candidate_id=r["candidate_id"],
+                        interview_id=r["interview_id"],
+                        room_url=r.get("room_url", ""),
+                        status=RoomStatus(r.get("status", RoomStatus.COMPLETED.value)),
+                        metadata=r.get("metadata", {}) or {},
+                    )
+            except Exception as exc:
+                logger.warning("Failed to fetch room %s from DB: %s", room_id, exc)
+
+        if not room:
+            logger.warning("Room %s not found for closing", room_id)
+            return {"status": "room_not_found", "room_id": room_id}
+
+        # Cancel any running agent task in memory
+        if session and session.agent_task and not session.agent_task.done():
             session.agent_task.cancel()
             try:
                 await session.agent_task
             except asyncio.CancelledError:
                 pass
 
-        await self.update_status(room_id, RoomStatus.COMPLETED)
+        # Check if scorecard already generated for this interview_id
+        already_evaluated = False
+        try:
+            existing_sc = await db.query("scorecards", interview_id=room.interview_id)
+            if existing_sc:
+                already_evaluated = True
+        except Exception as exc:
+            logger.warning("Error checking scorecards for %s: %s", room.interview_id, exc)
+
+        scorecard_result: dict[str, Any] = {}
+        if not already_evaluated:
+            # 1. Retrieve all Q&A transcript turns from Supabase interview_qa_logs
+            qa_logs = []
+            try:
+                qa_logs = await db.query("interview_qa_logs", session_id=room_id)
+                if not qa_logs:
+                    qa_logs = await db.query("interview_qa_logs", session_id=room.interview_id)
+            except Exception as exc:
+                logger.warning("Failed querying interview_qa_logs for room %s: %s", room_id, exc)
+
+            live_transcript_turns: list[dict[str, Any]] = []
+            if qa_logs:
+                sorted_logs = sorted(qa_logs, key=lambda x: x.get("question_number", 0))
+                for log in sorted_logs:
+                    q_text = log.get("question_text", "")
+                    c_text = log.get("candidate_answer_transcript", "")
+                    if q_text:
+                        live_transcript_turns.append({"speaker": "interviewer", "text": q_text})
+                    if c_text:
+                        live_transcript_turns.append({"speaker": "candidate", "text": c_text})
+
+            # Fallback to session.transcript if live_transcript_turns is empty
+            if not live_transcript_turns and session and hasattr(session, "transcript") and session.transcript:
+                live_transcript_turns = session.transcript
+
+            # 2. Retrieve rubric
+            rubric = room.metadata.get("rubric", {})
+            if not rubric:
+                try:
+                    run_id = room.metadata.get("run_id", f"run-room-{room_id[:8]}")
+                    rubric_db = await db.query("rubrics", run_id=run_id)
+                    if rubric_db:
+                        rubric = rubric_db[0].get("rubric", {})
+                except Exception:
+                    pass
+
+            if not rubric:
+                rubric = {
+                    "standard": f"Role ({room.metadata.get('role_id', 'r-default')})",
+                    "competencies": [
+                        {"competency_id": "core_skills", "keywords": ["python", "backend", "fastapi", "architecture"]},
+                        {"competency_id": "problem_solving", "keywords": ["algorithm", "system", "design", "scale"]},
+                    ],
+                }
+
+            # 3. Asynchronously invoke EvaluatorAgent
+            try:
+                from app.agents.evaluator_agent import EvaluatorAgent
+                evaluator = EvaluatorAgent(run_id=room.metadata.get("run_id", "run-eval"))
+                scorecard_result = await evaluator.evaluate_transcript(
+                    interview_id=room.interview_id,
+                    candidate_id=room.candidate_id,
+                    rubric=rubric,
+                    transcript_turns=live_transcript_turns,
+                )
+            except Exception as eval_exc:
+                logger.error("EvaluatorAgent failed during close_room for %s: %s", room_id, eval_exc)
+
+        await self.update_status(room_id, RoomStatus.EVALUATION_COMPLETE)
 
         # Notify all clients the session has ended
-        await session.broadcast({"type": "session-end", "data": {"room_id": room_id}})
+        if session:
+            await session.broadcast({
+                "type": "session-end",
+                "data": {
+                    "room_id": room_id,
+                    "status": "EVALUATION_COMPLETE",
+                    "scorecard": scorecard_result.get("scorecard", {}),
+                }
+            })
+            async with self._lock:
+                self._sessions.pop(room_id, None)
 
-        async with self._lock:
-            self._sessions.pop(room_id, None)
-
-        logger.info("Room closed: %s", room_id)
+        logger.info("Room closed and evaluation complete: %s", room_id)
+        return {
+            "status": "EVALUATION_COMPLETE",
+            "room_id": room_id,
+            "scorecard": scorecard_result.get("scorecard", {}),
+        }
 
 
 # Singleton instance shared across the application

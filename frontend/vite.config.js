@@ -15,6 +15,11 @@ export default defineConfig({
       '/manager_debrief': 'http://localhost:8000',
       '/fairness': 'http://localhost:8000',
       '/interviews': 'http://localhost:8000',
+      '/schedule_interview': 'http://localhost:8000',
+      '/start_meet_session': 'http://localhost:8000',
+      '/oral_interview': 'http://localhost:8000',
+      '/query_email': 'http://localhost:8000',
+      '/api': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
       '/outbox': 'http://localhost:8000',
       '/ws': {
@@ -24,3 +29,4 @@ export default defineConfig({
     }
   }
 })
+

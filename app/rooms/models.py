@@ -1,7 +1,7 @@
 """Pydantic models for the self-hosted Interview Room system."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import UUID
@@ -10,10 +10,11 @@ from pydantic import BaseModel, Field
 
 
 class RoomStatus(str, Enum):
-    SCHEDULED = "SCHEDULED"
-    WAITING   = "WAITING"
-    ACTIVE    = "ACTIVE"
-    COMPLETED = "COMPLETED"
+    SCHEDULED           = "SCHEDULED"
+    WAITING             = "WAITING"
+    ACTIVE              = "ACTIVE"
+    COMPLETED           = "COMPLETED"
+    EVALUATION_COMPLETE = "EVALUATION_COMPLETE"
 
 
 class InterviewRoom(BaseModel):
@@ -23,17 +24,22 @@ class InterviewRoom(BaseModel):
     interview_id: str
     room_url:     str
     status:       RoomStatus = RoomStatus.SCHEDULED
-    created_at:   datetime   = Field(default_factory=datetime.utcnow)
+    created_at:   datetime   = Field(default_factory=lambda: datetime.now(timezone.utc))
     started_at:   datetime | None = None
     ended_at:     datetime | None = None
     metadata:     dict[str, Any]  = Field(default_factory=dict)
 
 
 class CreateRoomRequest(BaseModel):
-    candidate_id: str
-    interview_id: str
-    slot_iso:     str | None = None
-    metadata:     dict[str, Any] = Field(default_factory=dict)
+    candidate_id:      str
+    interview_id:      str
+    slot_iso:          str | None = None
+    # BUG-15: HR must supply these so the right rubric is loaded in the interview session
+    role_id:           str = "r-default"
+    run_id:            str | None = None
+    # BUG-03: HR sets interview duration (0 = no limit, governed by MAX_TURNS instead)
+    duration_minutes:  int = 0
+    metadata:          dict[str, Any] = Field(default_factory=dict)
 
 
 class CreateRoomResponse(BaseModel):

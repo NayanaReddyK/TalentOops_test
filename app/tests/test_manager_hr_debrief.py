@@ -36,9 +36,7 @@ async def test_create_manager_debrief_session():
 
     mock_db_insert = {"id": "debrief-uuid-123"}
     with patch("app.services.database.db.query", new_callable=AsyncMock, return_value=mock_scorecard), \
-         patch("app.services.database.db.insert", new_callable=AsyncMock, return_value=mock_db_insert), \
-         patch("app.services.vexa_client.VexaClient.join_meeting", new_callable=AsyncMock, return_value={"meeting_id": "meet", "status": "joined"}), \
-         patch("app.services.calendar_service.GoogleCalendarService.create_interview_meeting", return_value={"meet_link": "https://meet.google.com/abc-defg-hij"}):
+         patch("app.services.database.db.insert", new_callable=AsyncMock, return_value=mock_db_insert):
         res = await create_manager_debrief_session(
             interview_id="iv-alex-99",
             candidate_id="c-alex"
@@ -46,7 +44,7 @@ async def test_create_manager_debrief_session():
 
         assert res["interview_id"] == "iv-alex-99"
         assert res["candidate_id"] == "c-alex"
-        assert "https://meet.google.com/" in res["meet_link"]
+        assert "room_url" in res
         assert res["status"] in ["Manager Agent Waiting", "Scheduled"]
         assert "knowledge_context" in res
         assert res["knowledge_context"]["candidate_id"] == "c-alex"

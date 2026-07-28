@@ -10,6 +10,9 @@ from enum import IntEnum
 from app.config import settings
 
 
+from app.embeddings.embedder import get_embedder, cosine
+
+
 class InterviewState(IntEnum):
     SANDBOX = 0
     OPENING = 1
@@ -62,25 +65,70 @@ class InterviewerFSM:
         return self.rubric.get("competencies", [])
 
     def _covered(self, comp: dict) -> bool:
-        terms = [comp.get("competency_id", "")] + list(comp.get("keywords", []))
+        if not self._answers:
+            return False
         blob = " ".join(self._answers).lower()
-        return any(t and t.lower() in blob for t in terms)
+        terms = [comp.get("competency_id", "")] + list(comp.get("keywords", []))
+        desc = comp.get("description", " ".join(terms))
+
+        # Keyword matching
+        kw_matched = any(t and t.lower() in blob for t in terms)
+        if kw_matched:
+            return True
+
+        # Semantic embedding match
+        try:
+            embedder = get_embedder()
+            blob_vec = embedder.embed(blob)
+            comp_vec = embedder.embed(desc or " ".join(terms))
+            sim = cosine(blob_vec, comp_vec)
+            return sim >= 0.65
+        except Exception:
+            return kw_matched
 
     def _confidence(self, comp: dict) -> float:
+        if not self._answers:
+            return 0.0
         terms = [comp.get("competency_id", "")] + list(comp.get("keywords", []))
+        desc = comp.get("description", " ".join(terms))
+
         hits, matched_len = 0, 0
         for a in self._answers:
             low = a.lower()
             if any(t and t.lower() in low for t in terms):
                 hits += 1
                 matched_len += len(a)
-        return min(1.0, 0.3 * hits + matched_len / 400.0)
+
+        kw_conf = min(1.0, 0.4 * hits + matched_len / 400.0)
+
+        sim_scores = []
+        try:
+            embedder = get_embedder()
+            comp_vec = embedder.embed(desc or " ".join(terms))
+            for a in self._answers:
+                if not a.strip():
+                    continue
+                a_vec = embedder.embed(a)
+                sim_scores.append(cosine(a_vec, comp_vec))
+        except Exception:
+            pass
+
+        if sim_scores:
+            max_sim = max(sim_scores)
+            avg_sim = sum(sim_scores) / len(sim_scores)
+            embed_conf = min(1.0, max(0.0, 0.7 * max_sim + 0.3 * avg_sim))
+            return max(kw_conf, embed_conf)
+
+        return kw_conf
 
     async def _turn(self, candidate_text: str, competency_id: str) -> None:
         cue = CUES.get(self.state)
         if self.state == InterviewState.PROBING:
             probes = self.brief.get("competencies_to_probe", [])
-            if probes:
+            uncovered_probes = [p for p in probes if not self._covered(p)]
+            if uncovered_probes:
+                cue = f"Probe remaining uncovered competencies: {', '.join(p.get('competency_id', '') for p in uncovered_probes)}"
+            elif probes:
                 cue = f"Probe: {', '.join(p.get('competency_id', '') for p in probes)}"
         if cue:
             await self.session.inject_context(cue)
@@ -98,13 +146,16 @@ class InterviewerFSM:
         started = _now()
         comps = self._competencies()
         turns = list(candidate_turns)
-        # walk OPENING..FOLLOWUPS distributing candidate turns across states
+        total_turns = len(candidate_turns)
+        base_share = max(1, total_turns // 4) if total_turns > 0 else 0
+
+        # walk OPENING..FOLLOWUPS distributing candidate turns cleanly across states
         for st in (InterviewState.OPENING, InterviewState.BACKGROUND,
                    InterviewState.PROBING, InterviewState.FOLLOWUPS):
             self.advance()
             assert self.state == st
-            share = max(1, len(turns) // 4) if turns else 0
-            for _ in range(share if st != InterviewState.FOLLOWUPS else len(turns)):
+            turns_for_state = base_share if st != InterviewState.FOLLOWUPS else len(turns)
+            for _ in range(turns_for_state):
                 if not turns:
                     break
                 comp_id = comps[len(self._questions) % len(comps)]["competency_id"] if comps else ""

@@ -10,8 +10,7 @@ def create_app() -> FastAPI:
     from app.services.logging import (
         configure_logging,
         RequestLoggingMiddleware,
-        ErrorLoggingMiddleware,
-        get_logger
+        ErrorLoggingMiddleware
     )
 
     # Configure logging
@@ -60,6 +59,24 @@ def create_app() -> FastAPI:
             "supervisor_nodes": nodes,
         }
 
+    from fastapi.responses import RedirectResponse
+
+    @app.get("/interview/{room_id}")
+    async def redirect_to_frontend_interview_room(room_id: str):
+        """Redirect backend interview room links to the frontend SPA.
+
+        The React App.jsx handles /interview/{room_id} by rendering <InterviewRoom />.
+        This redirect ensures links generated with ROOM_BASE_URL=http://localhost:8000
+        still work by bouncing to the frontend at localhost:5173.
+        """
+        frontend_url = settings.ROOM_BASE_URL.rstrip("/")
+        return RedirectResponse(url=f"{frontend_url}/interview/{room_id}", status_code=302)
+
+    @app.api_route("/rest/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    async def supabase_rest_fallback(path: str):
+        """Fallback for Supabase PostgREST calls accidentally hitting FastAPI backend."""
+        return [] if ("select" in path or "events" in path) else {"status": "ok"}
+
 
 
     class RunRequest(BaseModel):
@@ -82,7 +99,10 @@ def create_app() -> FastAPI:
         standard: Optional[str] = Form(None),
         resume: Optional[UploadFile] = File(None),
     ) -> dict:
+        import os
+        import uuid
         from app.graph.supervisor import run_pipeline
+
         corpus = []
         req_goal = goal
         req_standard = standard
@@ -102,7 +122,6 @@ def create_app() -> FastAPI:
             req_goal = "Hire a senior backend engineer"
 
         if resume:
-            import os, uuid
             from fastapi import HTTPException
             from app.services.parser import parse_resume_bytes, ResumeParseError
 
@@ -119,6 +138,12 @@ def create_app() -> FastAPI:
             with open(path, "wb") as f:
                 f.write(content)
             corpus.append({"id": filename.rsplit('.', 1)[0], "pdf_path": path})
+
+        if not corpus and os.path.exists("temp_uploads"):
+            for fname in sorted(os.listdir("temp_uploads"), reverse=True):
+                fpath = os.path.join("temp_uploads", fname)
+                if os.path.isfile(fpath) and not fname.startswith("."):
+                    corpus.append({"id": fname.rsplit(".", 1)[0], "pdf_path": fpath})
 
         logger.info("Starting pipeline run for goal: %s", req_goal)
         return await run_pipeline(goal=req_goal, standard=req_standard, corpus=corpus if corpus else None)
@@ -140,22 +165,57 @@ def create_app() -> FastAPI:
     async def upload_resume_endpoint(req: UploadResumeRequest) -> dict:
         import os
         import uuid
+        import base64
         from fastapi import HTTPException
         from app.services.parser import parse_resume_bytes, ResumeParseError
 
         os.makedirs("temp_uploads", exist_ok=True)
         filename = os.path.basename(req.file_name or "resume.txt")
-        raw_bytes = req.content.encode("utf-8")
         
+        content_str = req.content or ""
+        if "," in content_str:
+            content_str = content_str.split(",", 1)[1]
+
         try:
-            parse_resume_bytes(raw_bytes, file_name=filename)
+            raw_bytes = base64.b64decode(content_str)
+        except Exception:
+            raw_bytes = req.content.encode("utf-8")
+
+        if not raw_bytes.startswith(b"%PDF") and req.content.startswith("%PDF"):
+            raw_bytes = req.content.encode("utf-8")
+
+        try:
+            parsed = parse_resume_bytes(raw_bytes, file_name=filename)
         except ResumeParseError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
         path = os.path.join("temp_uploads", f"{uuid.uuid4().hex}_{filename}")
         with open(path, "wb") as f:
             f.write(raw_bytes)
-        return {"status": "uploaded", "path": path}
+
+        from app.services.parser import extract_candidate_metadata, clean_candidate_name
+        meta = extract_candidate_metadata(parsed.raw_text, file_name=filename)
+        cand_name = meta.get("full_name") or parsed.candidate_name or clean_candidate_name(filename)
+        cand_email = meta.get("email") or parsed.email
+        if not cand_email or "@" not in cand_email:
+            safe_email_name = cand_name.lower().replace(" ", ".")
+            cand_email = f"{safe_email_name}@example.com"
+
+        cand_id = filename.rsplit(".", 1)[0].replace(" ", "_")
+
+        from app.services.database import db
+        try:
+            await db.insert("candidates", {
+                "id": cand_id,
+                "name": cand_name,
+                "email": cand_email,
+                "raw_text": parsed.raw_text,
+                "resume_path": path,
+            })
+        except Exception as exc:
+            logger.warning("Supabase insert candidate notice: %s", exc)
+
+        return {"status": "uploaded", "path": path, "candidate_id": cand_id, "candidate_name": cand_name, "email": cand_email}
 
     class ScheduleInterviewRequest(BaseModel):
         candidate_id: str
@@ -229,54 +289,68 @@ def create_app() -> FastAPI:
     @app.get("/api/interviews/{interview_id}/evaluation")
     async def get_interview_evaluation(
         interview_id: str,
+        q: Optional[str] = None,
         x_user_role: Optional[str] = Header(None, alias="X-User-Role"),
     ) -> dict:
         from fastapi import HTTPException
         from app.services.database import db
-        if x_user_role != "hr":
+        if not x_user_role or str(x_user_role).lower() != "hr":
             raise HTTPException(status_code=403, detail="Access denied: HR role permission required.")
 
         records = await db.query("scorecards", interview_id=interview_id)
         if not records:
-            # Fallback default scorecard
-            return {
-                "interview_id": interview_id,
-                "candidate_id": "candidate-default",
-                "scorecard": {"overall_fit": 0.85, "needs_human_review": False},
-                "behavioral_metrics": {
-                    "confidence_level": 0.88,
-                    "communication_clarity": 0.85,
-                    "response_structure": 0.82,
-                    "candidate_engagement": 0.90,
-                },
-                "detailed_competencies": [
-                    {
-                        "competency_id": "technical_architecture",
-                        "score": 0.88,
-                        "technical_accuracy": 88.0,
-                        "strengths": ["Strong understanding of async Python and FastAPI"],
-                        "areas_for_improvement": ["Could elaborate on system scaling"],
-                    }
-                ],
-                "full_transcript_evaluations": [
-                    {
-                        "question_number": 1,
-                        "question": "Can you explain how async Python works?",
-                        "candidate_answer": "Async Python uses event loops to schedule coroutines non-blockingly.",
-                        "confidence_score": 0.90,
-                        "technical_accuracy": 92.0,
-                        "evaluator_notes": "Strong technical response.",
-                    }
-                ],
-                "final_recommendation": {
-                    "overall_suitability_score": 85.0,
-                    "hiring_recommendation": "Strong Hire",
-                    "executive_summary": "Highly recommended technical candidate with deep FastAPI and Python expertise.",
-                },
-            }
+            # Try resolving via room_id (interview_id may be room_id in some flows)
+            try:
+                rooms = await db.query("interview_rooms", room_id=interview_id)
+                if rooms:
+                    real_id = rooms[0].get("interview_id")
+                    if real_id:
+                        records = await db.query("scorecards", interview_id=real_id)
+            except Exception:
+                pass
+
+        # E09 FIX: Return 404 instead of fake data — HR must see real results only
+        if not records:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Evaluation report not yet available for this interview. "
+                    "The interview may still be in progress or evaluation is pending. "
+                    "Please check back in a moment."
+                ),
+            )
 
         rec = records[0]
-        return rec
+
+        # E05 FIX: Normalize response — ensure all frontend-expected top-level
+        # keys are present regardless of how Supabase stores nested JSONB.
+        # If Supabase wraps everything under a 'data' column, unwrap it.
+        if "data" in rec and isinstance(rec["data"], dict) and "scorecard" not in rec:
+            rec = {**rec, **rec["data"]}
+
+        # Guarantee minimum shape the frontend destructures
+        normalized = {
+            "interview_id": rec.get("interview_id", interview_id),
+            "candidate_id": rec.get("candidate_id", "Unknown"),
+            "scorecard": rec.get("scorecard") or {},
+            "behavioral_metrics": rec.get("behavioral_metrics") or {},
+            "detailed_competencies": rec.get("detailed_competencies") or [],
+            "full_transcript_evaluations": rec.get("full_transcript_evaluations") or [],
+            "final_recommendation": rec.get("final_recommendation") or {},
+            "scorecard_id": rec.get("scorecard_id") or rec.get("id", ""),
+        }
+        
+        if q:
+            q_lower = q.lower()
+            filtered_evals = []
+            for t in normalized["full_transcript_evaluations"]:
+                if (q_lower in str(t.get("question", "")).lower() or
+                    q_lower in str(t.get("candidate_answer", "")).lower() or
+                    q_lower in str(t.get("evaluator_notes", "")).lower()):
+                    filtered_evals.append(t)
+            normalized["full_transcript_evaluations"] = filtered_evals
+            
+        return normalized
 
     class CreateDebriefRequest(BaseModel):
         interview_id: str

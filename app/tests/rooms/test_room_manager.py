@@ -31,10 +31,9 @@ def patch_db(monkeypatch):
 @pytest.fixture(autouse=True)
 def patch_settings(monkeypatch):
     """Use localhost base URL in tests."""
-    class _FakeSettings:
-        ROOM_BASE_URL = "http://localhost:8000"
-    import app.config as cfg_mod
-    monkeypatch.setattr(cfg_mod, "get_settings", lambda: _FakeSettings())
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "ROOM_BASE_URL", "http://localhost:8000")
 
 
 class TestRoomManagerCreate:
@@ -87,3 +86,73 @@ class TestRoomManagerBroadcast:
         room = await manager.create_room(candidate_id="c-eve", interview_id="iv-005")
         # Should complete without error even with no clients connected
         await manager.broadcast(room.room_id, {"type": "test", "data": {}})
+
+
+class TestRoomManagerCloseAndEvaluate:
+    @pytest.mark.asyncio
+    async def test_close_room_evaluates_transcript_and_creates_scorecard(self, manager, monkeypatch):
+        """Integration test verifying close_room retrieves interview_qa_logs, runs EvaluatorAgent, and stores scorecard."""
+        from unittest.mock import AsyncMock
+        from app.rooms.models import RoomStatus
+
+        scorecards_inserted = []
+        qa_logs_mock = [
+            {
+                "question_number": 1,
+                "question_text": "Tell me about your Python backend experience.",
+                "candidate_answer_transcript": "I built REST APIs with FastAPI and PostgreSQL.",
+            },
+            {
+                "question_number": 2,
+                "question_text": "How do you handle scaling and caching?",
+                "candidate_answer_transcript": "We used Redis for caching and async handlers.",
+            },
+        ]
+
+        class _MockDB:
+            async def insert(self, table, data):
+                if table == "scorecards":
+                    scorecards_inserted.append(data)
+                    return {"id": "sc-integration-test-123"}
+                return {"id": "fake-id"}
+
+            async def update(self, table, where, data):
+                return {}
+
+            async def query(self, table, **kwargs):
+                if table == "interview_qa_logs":
+                    return qa_logs_mock
+                if table == "scorecards":
+                    return []
+                return []
+
+        import app.services.database as db_mod
+        mock_db_inst = _MockDB()
+        monkeypatch.setattr(db_mod, "db", mock_db_inst)
+        import app.rooms.room_manager as rm_mod
+        monkeypatch.setattr(rm_mod, "db", mock_db_inst)
+        import app.agents.evaluator_agent as eval_mod
+        monkeypatch.setattr(eval_mod, "db", mock_db_inst)
+        import app.agents.manager_debrief as debrief_mod
+        monkeypatch.setattr(debrief_mod, "db", mock_db_inst)
+
+        from unittest.mock import patch
+        with patch("app.agents.evaluator_agent.upsert_embedding"):
+            room = await manager.create_room(
+                candidate_id="cand-eval-test",
+                interview_id="iv-eval-test-100",
+            )
+            res = await manager.close_room(room.room_id)
+
+        assert res["status"] == "EVALUATION_COMPLETE"
+        assert "scorecard" in res
+
+        # Assert scorecards table received the inserted payload
+        assert len(scorecards_inserted) == 1
+        sc_payload = scorecards_inserted[0]
+        assert sc_payload["candidate_id"] == "cand-eval-test"
+        assert sc_payload["interview_id"] == "iv-eval-test-100"
+        assert "overall_fit" in sc_payload["scorecard"]
+        assert sc_payload["scorecard"]["overall_fit"] > 0.0
+        assert len(sc_payload["detailed_competencies"]) > 0
+        assert "final_recommendation" in sc_payload

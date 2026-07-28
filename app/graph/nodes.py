@@ -178,10 +178,30 @@ def interviewer_node(state: PipelineState) -> dict:
     return {"stage": WorkflowStage.EVALUATION, "completed": ["interviewer"], "results": {"interview": result}, "messages": [env]}
 
 
-def reporting_node(state: PipelineState) -> dict:
+async def reporting_node(state: PipelineState) -> dict:
     from app.graph.state import WorkflowStage
     run_id = state["run_id"]
     log_event(run_id, source="reporting", event_type="agent_started", payload={})
+
+    # ── E18 FIX: Trigger the evaluator agent ──
+    from app.agents.evaluator_agent import EvaluatorAgent
+    import logging
+    top = state.get("top_candidate", "unknown")
+    
+    # In some flows, interview_id is set in the results. If not, use run_id or top.
+    interview_results = state.get("results", {}).get("interview", {})
+    interview_id = interview_results.get("interview_id") or run_id
+    
+    try:
+        evaluator = EvaluatorAgent(run_id=run_id)
+        await evaluator.evaluate_transcript(
+            interview_id=interview_id,
+            candidate_id=top,
+            rubric=state.get("rubric")
+        )
+    except Exception as e:
+        logging.getLogger("talentops.nodes").error("EvaluatorAgent failed in reporting_node: %s", e)
+
     report = run_reporting(run_id, dict(state))
 
     # Generate Manager Debrief Meet link & script for Human HR

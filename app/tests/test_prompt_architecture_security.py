@@ -22,7 +22,7 @@ async def test_consent_agent_adversarial_injection_defense():
     res = await agent.process_response(
         candidate_id="c-hacker",
         response_text=malicious_input,
-        meet_link="https://meet.google.com/test"
+        room_id="room-123"
     )
     
     # Should detect refusal and ignore malicious override attempt
@@ -36,7 +36,7 @@ async def test_consent_agent_legitimate_consent():
     res = await agent.process_response(
         candidate_id="c-alex",
         response_text="Yes, I explicitly consent to the interview recording and AI evaluation.",
-        meet_link="https://meet.google.com/test"
+        room_id="room-123"
     )
     assert res["consent_granted"] is True
     assert res["status"] == "CONSENT_GRANTED"

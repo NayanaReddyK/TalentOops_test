@@ -3,7 +3,7 @@ import { Rocket, Loader2, PhoneOff, Copy, ExternalLink } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
-export default function DeployBot({ roleId, candidateId, interviewId, onDeployed }) {
+export default function DeployBot({ roleId, candidateId, interviewId, onDeployed, onEnded }) {
   const [roomId,    setRoomId]    = useState('');
   const [roomUrl,   setRoomUrl]   = useState('');
   const [creating,  setCreating]  = useState(false);
@@ -46,6 +46,7 @@ export default function DeployBot({ roleId, candidateId, interviewId, onDeployed
       await fetch(`${API_BASE}/rooms/${roomId}/end`, { method: 'POST' });
       setRoomId('');
       setRoomUrl('');
+      if (onEnded) onEnded();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -118,7 +119,7 @@ export default function DeployBot({ roleId, candidateId, interviewId, onDeployed
             title="End Interview Room"
           >
             {ending ? <Loader2 size={16} className="animate-spin" /> : <PhoneOff size={16} />}
-            End
+            End & Evaluate
           </button>
         </>
       )}

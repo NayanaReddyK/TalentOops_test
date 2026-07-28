@@ -1,6 +1,10 @@
 """Manager Agent live reporting — read-only voice Q&A over in-platform rooms."""
+import re
+import logging
 from app.services.database import db
 from app.services.session_broker import broker, VoiceSession
+
+logger = logging.getLogger("talentops.manager_voice")
 
 FORBIDDEN = ("change the rubric", "modify", "alter", "re-run", "rerun", "dispatch")
 REFUSAL = ("This is a read-only reporting meeting: I can't run sub-agents or alter "
@@ -26,24 +30,39 @@ class ManagerVoiceMeeting:
 
     async def answer(self, question: str) -> str:
         low = question.lower()
-        if any(f in low for f in FORBIDDEN):
-            return REFUSAL
+        for term in FORBIDDEN:
+            pattern = r"\b" + re.escape(term) + r"\b"
+            if re.search(pattern, low):
+                return REFUSAL
+
+        db_errors = []
         try:
             candidates = await db.query("candidates", role_id=self.role_id)
-        except Exception:
-            candidates = []
+        except Exception as exc:
+            logger.error("Database query failed for candidates (role_id=%s): %s", self.role_id, exc)
+            candidates = None
+            db_errors.append("candidates")
+
         try:
             scorecards = await db.query("scorecards")
-        except Exception:
-            scorecards = []
+        except Exception as exc:
+            logger.error("Database query failed for scorecards: %s", exc)
+            scorecards = None
+            db_errors.append("scorecards")
+
         try:
             interviews = await db.query("interviews", role_id=self.role_id)
-        except Exception:
-            interviews = []
+        except Exception as exc:
+            logger.error("Database query failed for interviews (role_id=%s): %s", self.role_id, exc)
+            interviews = None
+            db_errors.append("interviews")
 
-        names = ", ".join(c.get("name", "?") for c in candidates) or "none yet"
-        return (f"Pipeline state: {len(candidates)} candidate(s) ({names}); "
-                f"{len(interviews)} interview(s) recorded; {len(scorecards)} scorecard(s) complete.")
+        if db_errors:
+            return f"Database query error while fetching pipeline state for {', '.join(db_errors)}. Please retry."
+
+        names = ", ".join(c.get("name", "?") for c in (candidates or [])) or "none yet"
+        return (f"Pipeline state: {len(candidates or [])} candidate(s) ({names}); "
+                f"{len(interviews or [])} interview(s) recorded; {len(scorecards or [])} scorecard(s) complete.")
 
     def barge_in(self) -> None:
         self._barged = True  # turn-taking handled natively by VAD

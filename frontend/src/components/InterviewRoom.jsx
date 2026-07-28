@@ -63,13 +63,25 @@ export default function InterviewRoom({ roomId }) {
   const [scorecard,   setScorecard]   = useState(null);
   const [behavMetrics, setBehavMetrics] = useState(null);
   const [recommendation, setRecommendation] = useState(null);
+  const [detailedCompetencies, setDetailedCompetencies] = useState([]);
+  const [transcriptEvals, setTranscriptEvals] = useState([]);
   const [errorMsg,    setErrorMsg]    = useState('');
+
+  // BUG-03: countdown timer state (totalSeconds = 0 means no limit set)
+  const [totalSeconds,   setTotalSeconds]   = useState(0);
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+
   const [roomMeta,    setRoomMeta]    = useState(null);
 
   const wsRef          = useRef(null);
   const localVideoRef  = useRef(null);
   const localStream    = useRef(null);
   const transcriptEnd  = useRef(null);
+  // BUG-12: single persistent recognizer — don't recreate on every micOn toggle
+  const recognizerRef  = useRef(null);
+  const micOnRef       = useRef(true);   // mirror of micOn for use inside recognizer callbacks
+  const stageRef       = useRef(STAGE.LOBBY); // mirror of stage for same reason
+  const countdownRef   = useRef(null);  // interval ID for countdown timer
 
   /* ── webcam preview ─────────────────────────────────────────────────────── */
   useEffect(() => {
@@ -97,11 +109,162 @@ export default function InterviewRoom({ roomId }) {
       localStream.current.getVideoTracks().forEach(t => (t.enabled = camOn));
     }
   }, [camOn]);
+  const silenceTimerRef = useRef(null);
+  const handleTurnSendRef = useRef(null);
+  const finalTranscriptRef = useRef('');
 
   /* ── auto-scroll transcript ─────────────────────────────────────────────── */
   useEffect(() => {
     transcriptEnd.current?.scrollIntoView({ behavior: 'smooth' });
   }, [transcript]);
+
+  /* ── Speech Synthesis helper ────────────────────────────────────────────── */
+  // BUG-01: pick the most human-sounding voice available on this device
+  const pickBestVoice = useCallback(() => {
+    const voices = window.speechSynthesis?.getVoices() || [];
+    const preferred = [
+      'Google UK English Female', 'Google US English', 'Samantha',
+      'Alex', 'Karen', 'Moira', 'Fiona',
+    ];
+    for (const name of preferred) {
+      const v = voices.find(v => v.name === name);
+      if (v) return v;
+    }
+    // Fall back to first en-US voice, or first available
+    return voices.find(v => v.lang?.startsWith('en')) || voices[0] || null;
+  }, []);
+
+  const speakText = useCallback((text) => {
+    if (!text || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      // BUG-01: explicitly select best voice; tune rate/pitch to sound natural
+      const voice = pickBestVoice();
+      if (voice) utterance.voice = voice;
+      utterance.rate  = 0.95;   // slightly slower = more natural
+      utterance.pitch = 1.05;   // very slight lift sounds less robotic
+      utterance.volume = 1.0;
+
+      utterance.onstart = () => {
+        // Automatically disable/mute candidate mic while AI is speaking
+        setMicOn(false);
+        micOnRef.current = false;
+      };
+      utterance.onend = () => {
+        // Automatically activate candidate microphone when AI finishes speaking
+        setMicOn(true);
+        micOnRef.current = true;
+      };
+      utterance.onerror = () => {
+        setMicOn(true);
+        micOnRef.current = true;
+      };
+
+      // Chrome bug: voices list sometimes empty on first call — retry after load
+      if (window.speechSynthesis.getVoices().length === 0) {
+        window.speechSynthesis.addEventListener('voiceschanged', () => {
+          const v2 = pickBestVoice();
+          if (v2) utterance.voice = v2;
+          window.speechSynthesis.speak(utterance);
+        }, { once: true });
+      } else {
+        window.speechSynthesis.speak(utterance);
+      }
+    } catch (e) {
+      console.warn('SpeechSynthesis error:', e);
+      setMicOn(true);
+      micOnRef.current = true;
+    }
+  }, [pickBestVoice]);
+
+  /* ── Speech Recognition setup ───────────────────────────────────────────── */
+  // BUG-12: Create recognizer ONCE; start/stop it when micOn changes (don't recreate)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    let recognition;
+    try {
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event) => {
+        // BUG-13: Ignore results if mic is supposed to be off (AI is speaking)
+        if (!micOnRef.current) return;
+        // BUG-13: Also ignore if we're not in the interview/consent stage
+        if (stageRef.current !== STAGE.INTERVIEW && stageRef.current !== STAGE.CONSENT) return;
+
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscriptRef.current += event.results[i][0].transcript + ' ';
+          } else {
+            interim += event.results[i][0].transcript;
+          }
+        }
+        const fullSpokenText = (finalTranscriptRef.current + interim).trim();
+        if (fullSpokenText) {
+          setTurnInput(fullSpokenText);
+          setConsentText(prev => prev || fullSpokenText);
+
+          // 3.0-second silence detector (VAD auto-submit after natural pauses)
+          // BUG-13: only arm the timer when mic is genuinely on
+          if (!micOnRef.current) return;
+          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = setTimeout(() => {
+            // BUG-14: read current ref value, not captured closure value
+            const textToSubmit = finalTranscriptRef.current.trim();
+            if (textToSubmit && handleTurnSendRef.current) {
+              handleTurnSendRef.current(textToSubmit);
+            }
+          }, 3000);
+        }
+      };
+
+      recognition.onend = () => {
+        // Auto-restart if mic should still be on (recognition stops automatically on some browsers)
+        if (micOnRef.current && recognizerRef.current === recognition) {
+          try { recognition.start(); } catch {}
+        }
+      };
+
+      recognizerRef.current = recognition;
+      try { recognition.start(); } catch {}
+    } catch (e) {
+      console.warn('SpeechRecognition failed to start:', e);
+    }
+
+    return () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      recognizerRef.current = null;
+      try { recognition?.stop(); } catch {}
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only create once!
+
+  // BUG-12: Separate effect to start/stop recognizer when micOn changes
+  useEffect(() => {
+    micOnRef.current = micOn;
+    const rec = recognizerRef.current;
+    if (!rec) return;
+    if (micOn) {
+      try { rec.start(); } catch {/* already running */}
+    } else {
+      try { rec.stop(); } catch {/* already stopped */}
+    }
+  }, [micOn]);
+
+  // Mirror stage into ref for use inside recognizer onresult
+  useEffect(() => {
+    stageRef.current = stage;
+    if (stage === STAGE.COMPLETE) {
+      window.location.href = `/?interviewId=${roomId}&tab=hr`;
+    }
+  }, [stage, roomId]);
 
   /* ── WebSocket connection ───────────────────────────────────────────────── */
   const connectWs = useCallback(() => {
@@ -122,33 +285,84 @@ export default function InterviewRoom({ roomId }) {
           break;
 
         case 'consent-ask':
-          setDisclosure(data.text || '');
+          const askText = data.text || '';
+          setDisclosure(askText);
+          speakText(askText);
           break;
 
-        case 'agent-message':
-          if (data.agent === 'consent' && data.consent_granted) {
-            setStage(STAGE.INTERVIEW);
-          } else if (data.agent === 'consent' && !data.consent_granted) {
-            setStage(STAGE.ERROR);
-            setErrorMsg('Consent was not granted. Session ended.');
+        case 'agent-message': {
+          const agentText = data.text || '';
+          if (data.agent === 'consent') {
+            if (data.consent_granted) {
+              setStage(STAGE.INTERVIEW);
+            } else {
+              setStage(STAGE.ERROR);
+              setErrorMsg('Consent was not granted. Session ended.');
+            }
+          } else if (data.event === 'interview_duration' && data.duration_seconds > 0) {
+            // BUG-03: Backend sent the interview duration — start countdown
+            setTotalSeconds(data.duration_seconds);
+            setRemainingSeconds(data.duration_seconds);
+            if (countdownRef.current) clearInterval(countdownRef.current);
+            countdownRef.current = setInterval(() => {
+              setRemainingSeconds(prev => {
+                if (prev <= 1) { clearInterval(countdownRef.current); return 0; }
+                return prev - 1;
+              });
+            }, 1000);
+          } else if (agentText) {
+            // BUG-10: was filtering out data.agent === 'interviewer'; now we always show
+            setTranscript(prev => prev.some(t => t.text === agentText) ? prev : [
+              ...prev, { speaker: 'agent', text: agentText },
+            ]);
+            speakText(agentText);
+          }
+          break;
+        }
+
+        case 'interview-turn':
+          if (data.text) {
+            const text = data.text;
+            const speaker = data.speaker || 'agent';
+            setTranscript(prev => {
+              if (prev.length > 0 && prev[prev.length - 1].speaker === speaker && prev[prev.length - 1].text === text) {
+                return prev;
+              }
+              return [...prev, { speaker, text }];
+            });
+            // BUG-19: only speak AI turns — never read back candidate's own answer
+            if (speaker === 'interviewer' || speaker === 'agent') {
+              speakText(text);
+            }
           }
           break;
 
-        case 'interview-turn':
-          setTranscript(prev => [...prev, { speaker: data.speaker, text: data.text }]);
-          break;
-
         case 'eval-update':
-          setScorecard(data.scorecard || null);
-          setBehavMetrics(data.behavioral_metrics || null);
-          setRecommendation(data.final_recommendation || null);
-          setStage(STAGE.EVALUATING);
-          break;
+        case 'session-end': {
+          const scData = data.scorecard || {};
+          const sc = scData.scorecard || scData;
+          setScorecard(sc);
 
-        case 'session-end':
-          setStage(STAGE.COMPLETE);
-          if (data.scorecard) setScorecard(data.scorecard);
+          const rec = data.final_recommendation || scData.final_recommendation || null;
+          if (rec) setRecommendation(rec);
+
+          const bm = data.behavioral_metrics || scData.behavioral_metrics || null;
+          if (bm) setBehavMetrics(bm);
+
+          const dc = data.detailed_competencies || scData.detailed_competencies || null;
+          if (dc) setDetailedCompetencies(dc);
+
+          const te = data.full_transcript_evaluations || scData.full_transcript_evaluations || null;
+          if (te) setTranscriptEvals(te);
+
+          if (type === 'session-end' || data.status === 'completed') {
+            setStage(STAGE.COMPLETE);
+          } else {
+            setStage(STAGE.EVALUATING);
+          }
           break;
+        }
+
 
         case 'error':
           setStage(STAGE.ERROR);
@@ -166,7 +380,17 @@ export default function InterviewRoom({ roomId }) {
     };
 
     ws.onclose = () => { wsRef.current = null; };
-  }, [roomId]);
+  }, [roomId, speakText]);
+
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.onmessage = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
 
   const sendFrame = (type, data = {}) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -182,19 +406,41 @@ export default function InterviewRoom({ roomId }) {
     sendFrame('consent-response', { text: consentText });
   };
 
-  const handleTurnSend = () => {
-    if (!turnInput.trim()) return;
-    setTranscript(prev => [...prev, { speaker: 'candidate', text: turnInput }]);
-    sendFrame('interview-turn', { text: turnInput });
+  const handleTurnSend = useCallback((overrideText) => {
+    const textToSend = typeof overrideText === 'string' ? overrideText : turnInput;
+    if (!textToSend || !textToSend.trim()) return;
+
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+
+    const finalStr = textToSend.trim();
+    setTranscript(prev => {
+      if (prev.length > 0 && prev[prev.length - 1].speaker === 'candidate' && prev[prev.length - 1].text === finalStr) {
+        return prev;
+      }
+      return [...prev, { speaker: 'candidate', text: finalStr }];
+    });
+    sendFrame('interview-turn', { text: finalStr });
     setTurnInput('');
-  };
+    finalTranscriptRef.current = '';
+    setMicOn(false);
+  }, [turnInput]);
+
+  useEffect(() => {
+    handleTurnSendRef.current = handleTurnSend;
+  }, [handleTurnSend]);
 
   const handleEnd = async () => {
     sendFrame('session-end');
     wsRef.current?.close();
     await fetch(`${API_BASE}/rooms/${roomId}/end`, { method: 'POST' }).catch(() => {});
     setStage(STAGE.COMPLETE);
+    window.location.href = `/?interviewId=${roomId}&tab=hr`;
   };
+
+
 
   /* ─── render ─────────────────────────────────────────────────────────────── */
   return (
@@ -209,12 +455,21 @@ export default function InterviewRoom({ roomId }) {
           <span className="text-slate-500">|</span>
           <span className="text-slate-400 text-sm">Interview Room</span>
         </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className={`w-2 h-2 rounded-full ${
-            stage === STAGE.INTERVIEW || stage === STAGE.EVALUATING
-              ? 'bg-green-400 animate-pulse' : 'bg-slate-600'
-          }`} />
-          <span className="text-slate-400 font-mono">{roomId?.slice(0,8) ?? '---'}</span>
+        <div className="flex items-center gap-4 text-xs">
+          {totalSeconds > 0 && (
+            <div className={`px-3 py-1 rounded-full font-mono flex items-center gap-2 ${
+              remainingSeconds <= 60 ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse' : 'bg-slate-800 text-slate-300 border border-slate-700'
+            }`}>
+              ⏱ {Math.floor(remainingSeconds / 60)}:{(remainingSeconds % 60).toString().padStart(2, '0')}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${
+              stage === STAGE.INTERVIEW || stage === STAGE.EVALUATING
+                ? 'bg-green-400 animate-pulse' : 'bg-slate-600'
+            }`} />
+            <span className="text-slate-400 font-mono">{roomId?.slice(0,8) ?? '---'}</span>
+          </div>
         </div>
       </header>
 
@@ -385,16 +640,34 @@ export default function InterviewRoom({ roomId }) {
           )}
 
           {/* INTERVIEW */}
-          {(stage === STAGE.INTERVIEW || stage === STAGE.EVALUATING) && (
+          {stage === STAGE.INTERVIEW && (
             <div className="w-full max-w-2xl flex flex-col h-full" style={{ maxHeight: '70vh' }}>
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse" />
-                <span className="text-sm text-slate-400">Interview in progress</span>
-                {stage === STAGE.EVALUATING && (
-                  <span className="ml-auto text-xs text-cyan-400 flex items-center gap-1">
-                    <Loader2 size={12} className="animate-spin" /> Evaluating…
-                  </span>
-                )}
+              <div className="flex items-center justify-between gap-2 mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse" />
+                  <span className="text-sm text-slate-400 font-medium">Interview in progress</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  {micOn ? (
+                    <span className="text-xs text-rose-400 font-semibold flex items-center gap-1.5 bg-rose-500/10 px-3 py-1 rounded-full border border-rose-500/20">
+                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" /> Listening...
+                    </span>
+                  ) : (
+                    <span className="text-xs text-cyan-400 font-medium flex items-center gap-1.5 bg-cyan-500/10 px-3 py-1 rounded-full border border-cyan-500/20">
+                      <Loader2 size={12} className="animate-spin" /> AI Speaking / Thinking…
+                    </span>
+                  )}
+                  <button
+                    id="btn-end-interview-header"
+                    onClick={() => {
+                      setStage(STAGE.EVALUATING);
+                      sendFrame('session-end');
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm"
+                  >
+                    <XCircle size={14} /> End Interview &amp; Get Evaluation
+                  </button>
+                </div>
               </div>
 
               {/* transcript scroll area */}
@@ -405,53 +678,82 @@ export default function InterviewRoom({ roomId }) {
                 <div ref={transcriptEnd} />
               </div>
 
-              {/* answer input */}
+              {/* Live Speech Accumulator preview box */}
+              {micOn && turnInput && (
+                <div className="mb-3 p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-between text-xs text-cyan-200">
+                  <div className="flex items-center gap-2 overflow-hidden mr-3">
+                    <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping flex-shrink-0" />
+                    <span className="font-mono text-slate-400 flex-shrink-0">Live STT Buffer:</span>
+                    <span className="truncate italic font-sans text-slate-100">{turnInput}</span>
+                  </div>
+                  <button
+                    id="btn-done-speaking-quick"
+                    onClick={() => handleTurnSend(turnInput)}
+                    className="flex-shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold flex items-center gap-1 shadow-sm transition-all"
+                  >
+                    <CheckCircle size={13} /> Done Speaking
+                  </button>
+                </div>
+              )}
+
+              {/* answer input & controls */}
               <div className="flex gap-3">
                 <input
                   id="input-answer"
                   type="text"
                   value={turnInput}
-                  onChange={e => setTurnInput(e.target.value)}
+                  onChange={e => {
+                    setTurnInput(e.target.value);
+                    finalTranscriptRef.current = e.target.value;
+                  }}
                   onKeyDown={e => e.key === 'Enter' && handleTurnSend()}
-                  placeholder="Type your answer…"
+                  placeholder="Type your answer or speak into mic…"
                   className="flex-1 bg-white/8 border border-white/15 rounded-xl px-4 py-3
                              text-white placeholder:text-slate-500 text-sm
                              focus:outline-none focus:border-cyan-500 transition-all"
                 />
                 <button
                   id="btn-send-turn"
-                  onClick={handleTurnSend}
+                  onClick={() => handleTurnSend()}
                   disabled={!turnInput.trim()}
                   className="px-5 py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500
                              text-white font-medium text-sm transition-all
-                             disabled:opacity-40 disabled:cursor-not-allowed"
+                             disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
                 >
-                  Send
+                  <CheckCircle size={16} /> Done Speaking
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* EVALUATING */}
+          {stage === STAGE.EVALUATING && (
+            <div className="text-center max-w-md my-auto py-12">
+              <div className="w-20 h-20 rounded-full bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center mx-auto mb-6 relative">
+                <Loader2 size={36} className="text-cyan-400 animate-spin" />
+                <span className="absolute -inset-1 rounded-full border border-cyan-500/30 animate-ping" />
+              </div>
+              <h2 className="text-2xl font-bold text-white mb-2">Analyzing Interview Responses…</h2>
+              <p className="text-slate-400 text-sm mb-6 leading-relaxed">
+                Evaluator Agent is synthesizing transcript evidence, calculating technical competency benchmarks, and evaluating behavioral metrics.
+              </p>
+              <div className="flex items-center justify-center gap-2 text-xs font-mono text-cyan-400 bg-cyan-500/10 py-2.5 px-4 rounded-xl border border-cyan-500/20">
+                <Activity size={14} className="animate-pulse" /> Live Scorecard Synthesis in Progress
               </div>
             </div>
           )}
 
           {/* COMPLETE */}
           {stage === STAGE.COMPLETE && (
-            <div className="text-center max-w-md">
-              <div className="w-20 h-20 rounded-full bg-green-500/20 border border-green-500/40 flex items-center justify-center mx-auto mb-6">
-                <Award size={36} className="text-green-400" />
+            <div className="text-center max-w-md my-auto py-12">
+              <div className="w-16 h-16 rounded-full bg-cyan-500/20 flex items-center justify-center mx-auto mb-4">
+                <Loader2 size={32} className="text-cyan-400 animate-spin" />
               </div>
-              <h2 className="text-2xl font-bold text-white mb-2">Interview Complete!</h2>
-              <p className="text-slate-400 text-sm mb-6 leading-relaxed">
-                Your session has been recorded and submitted for evaluation. HR will be in touch.
-              </p>
-              {recommendation && (
-                <div className="bg-white/5 border border-white/10 rounded-2xl p-5 text-left">
-                  <div className="text-xs text-slate-400 uppercase tracking-wider mb-3">Session Summary</div>
-                  <div className="text-sm text-slate-300 leading-relaxed">
-                    {recommendation.executive_summary}
-                  </div>
-                </div>
-              )}
+              <h2 className="text-2xl font-bold text-white mb-2">Redirecting...</h2>
+              <p className="text-slate-400 text-sm">Taking you to the HR Dashboard.</p>
             </div>
           )}
+
 
           {/* ERROR */}
           {stage === STAGE.ERROR && (

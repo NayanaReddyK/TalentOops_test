@@ -39,16 +39,22 @@ class Database:
                 metrics_collector.increment_error_count("database", "insert")
             raise
 
-    async def update(self, table: str, row_id: str, patch: dict) -> dict | None:
+    async def update(self, table: str, row_id: str | dict, patch: dict, id_column: str = "id") -> dict | None:
         """Update a row in the database."""
         try:
-            data = self._sb().table(table).update(patch).eq("id", row_id).execute().data
+            query = self._sb().table(table).update(patch)
+            if isinstance(row_id, dict):
+                for k, v in row_id.items():
+                    query = query.eq(k, v)
+            else:
+                query = query.eq(id_column, row_id)
+            data = query.execute().data
             return data[0] if data else None
         except Exception as e:
             if logger:
                 logger.error(
-                    "Remote table '%s' update failed (%s)",
-                    table, type(e).__name__
+                    "Remote table '%s' update failed (%s: %s)",
+                    table, type(e).__name__, str(e).splitlines()[0] if str(e) else ""
                 )
             if metrics_collector:
                 metrics_collector.increment_error_count("database", "update")

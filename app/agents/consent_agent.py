@@ -17,7 +17,7 @@ _AFFIRMATIVE_TERMS = {
 }
 
 _NEGATIVE_TERMS = {
-    "no", "decline", "refuse", "disagree", "not comfortable",
+    "no", "decline", "refuse", "disagree", "not comfortable", "not sure", "unsure", "not certain",
     "don't consent", "do not consent", "cancel", "stop", "uncomfortable"
 }
 
@@ -58,41 +58,46 @@ Return a JSON object conforming strictly to this schema:
 """
 
 
+import re
+
 def parse_consent_intent_detailed(text: str) -> ConsentEvaluationResult:
     """Classify candidate verbal or text response returning structured Pydantic evaluation result."""
     lowered = (text or "").strip().lower()
 
-    # Rule 1: Check for explicit refusal/override attempts
-    for term in _NEGATIVE_TERMS:
-        if term in lowered:
-            return ConsentEvaluationResult(
-                consent_granted=False,
-                confidence_score=0.95,
-                reasoning=f"Explicit negative term detected: '{term}'",
-            )
-
-    # Rule 2: Check for affirmative consent
-    for term in _AFFIRMATIVE_TERMS:
-        if term in lowered:
-            return ConsentEvaluationResult(
-                consent_granted=True,
-                confidence_score=0.95,
-                reasoning=f"Explicit affirmative consent term detected: '{term}'",
-            )
-
-    # Ambiguous or empty input handling
-    if len(lowered) == 0:
+    if not lowered:
         return ConsentEvaluationResult(
             consent_granted=False,
             confidence_score=0.0,
             reasoning="Empty input response provided.",
         )
 
+    # Rule 1: Check for explicit refusal/override attempts using word boundaries
+    for term in _NEGATIVE_TERMS:
+        pattern = r"\b" + re.escape(term) + r"\b"
+        if re.search(pattern, lowered):
+            return ConsentEvaluationResult(
+                consent_granted=False,
+                confidence_score=0.95,
+                reasoning=f"Explicit negative term detected: '{term}'",
+            )
+
+    # Rule 2: Check for affirmative consent using word boundaries
+    for term in _AFFIRMATIVE_TERMS:
+        pattern = r"\b" + re.escape(term) + r"\b"
+        if re.search(pattern, lowered):
+            return ConsentEvaluationResult(
+                consent_granted=True,
+                confidence_score=0.95,
+                reasoning=f"Explicit affirmative consent term detected: '{term}'",
+            )
+
+    # Default policy per Section 2: Do NOT infer consent on ambiguous or hesitant responses ("I'm not sure", "let me think")
     return ConsentEvaluationResult(
-        consent_granted=True,
-        confidence_score=0.70,
-        reasoning="Implicit affirmative intent classified.",
+        consent_granted=False,
+        confidence_score=0.0,
+        reasoning="Ambiguous or hesitant response provided — default denied per safety policy.",
     )
+
 
 
 def parse_consent_intent(text: str) -> bool:

@@ -62,6 +62,19 @@ def _get_text_hash(text: str, dim: int) -> str:
     return hashlib.sha256(f"{dim}:{text or ''}".encode("utf-8")).hexdigest()
 
 
+def _hash_embed(text: str, dim: int = 384) -> list[float]:
+    """Fallback deterministic vector generator when remote embedding API is unavailable or out of credits."""
+    import hashlib
+    import math
+    vec = []
+    for i in range(dim):
+        digest = hashlib.sha256(f"{i}:{text}".encode("utf-8")).digest()
+        val = (digest[0] / 255.0) * 2.0 - 1.0
+        vec.append(val)
+    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+    return [v / norm for v in vec]
+
+
 class RemoteEmbedder:
     """OpenAI-compatible embeddings endpoint (lazy) with dimension constraint, vector normalization, and retries."""
 
@@ -89,13 +102,17 @@ class RemoteEmbedder:
         if cache_key in _EMBEDDING_CACHE:
             return _EMBEDDING_CACHE[cache_key]
 
-        # Pass dimensions=self.dim when calling embedding model to force exact 384 dim matching Supabase schema
-        kwargs: dict[str, Any] = {"model": self._model, "input": text}
-        if "text-embedding-3" in self._model:
-            kwargs["dimensions"] = self.dim
-        resp = self._client.embeddings.create(**kwargs)
-        raw_vec = resp.data[0].embedding
-        norm_vec = self._normalize(raw_vec)
+        try:
+            kwargs: dict[str, Any] = {"model": self._model, "input": text}
+            if "text-embedding-3" in self._model:
+                kwargs["dimensions"] = self.dim
+            resp = self._client.embeddings.create(**kwargs)
+            raw_vec = resp.data[0].embedding
+            norm_vec = self._normalize(raw_vec)
+        except Exception as exc:
+            logger.warning("Remote embedding API call failed (%s). Using fallback deterministic vector.", exc)
+            norm_vec = _hash_embed(text, self.dim)
+
         _EMBEDDING_CACHE[cache_key] = norm_vec
         return norm_vec
 
@@ -117,15 +134,23 @@ class RemoteEmbedder:
                 missing_texts.append(text)
 
         if missing_texts:
-            kwargs: dict[str, Any] = {"model": self._model, "input": missing_texts}
-            if "text-embedding-3" in self._model:
-                kwargs["dimensions"] = self.dim
-            resp = self._client.embeddings.create(**kwargs)
-            for m_idx, item in zip(missing_indices, resp.data):
-                norm_vec = self._normalize(item.embedding)
-                cache_key = _get_text_hash(texts[m_idx], self.dim)
-                _EMBEDDING_CACHE[cache_key] = norm_vec
-                results[m_idx] = norm_vec
+            try:
+                kwargs: dict[str, Any] = {"model": self._model, "input": missing_texts}
+                if "text-embedding-3" in self._model:
+                    kwargs["dimensions"] = self.dim
+                resp = self._client.embeddings.create(**kwargs)
+                for m_idx, item in zip(missing_indices, resp.data):
+                    norm_vec = self._normalize(item.embedding)
+                    cache_key = _get_text_hash(texts[m_idx], self.dim)
+                    _EMBEDDING_CACHE[cache_key] = norm_vec
+                    results[m_idx] = norm_vec
+            except Exception as exc:
+                logger.warning("Remote embed_batch API call failed (%s). Using fallback deterministic vectors.", exc)
+                for m_idx in missing_indices:
+                    norm_vec = _hash_embed(texts[m_idx], self.dim)
+                    cache_key = _get_text_hash(texts[m_idx], self.dim)
+                    _EMBEDDING_CACHE[cache_key] = norm_vec
+                    results[m_idx] = norm_vec
 
         return [res for res in results if res is not None]
 

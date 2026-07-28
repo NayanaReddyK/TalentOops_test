@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
 
     # Self-hosted Interview Room
-    ROOM_BASE_URL: str = "http://localhost:8000"
+    ROOM_BASE_URL: str = "http://localhost:5173"
 
     # CORS Configuration - Security
     # In development: use http://localhost:5173 (Vite default)
