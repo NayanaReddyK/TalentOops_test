@@ -217,16 +217,21 @@ class RoomManager:
             except asyncio.CancelledError:
                 pass
 
-        # Check if scorecard already generated for this interview_id
+        # Check if scorecard already generated for this interview_id, room_id, or candidate_id
         already_evaluated = False
+        scorecard_result: dict[str, Any] = {}
         try:
             existing_sc = await db.query("scorecards", interview_id=room.interview_id)
+            if not existing_sc:
+                existing_sc = await db.query("scorecards", interview_id=room_id)
+            if not existing_sc:
+                existing_sc = await db.query("scorecards", candidate_id=room.candidate_id)
             if existing_sc:
                 already_evaluated = True
+                scorecard_result = existing_sc[0]
         except Exception as exc:
             logger.warning("Error checking scorecards for %s: %s", room.interview_id, exc)
 
-        scorecard_result: dict[str, Any] = {}
         if not already_evaluated:
             # 1. Retrieve all Q&A transcript turns from Supabase interview_qa_logs
             qa_logs = []

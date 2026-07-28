@@ -324,17 +324,74 @@ def create_app() -> FastAPI:
 
         records = await db.query("scorecards", interview_id=interview_id)
         if not records:
-            # Try resolving via room_id (interview_id may be room_id in some flows)
+            records = await db.query("scorecards", candidate_id=interview_id)
+
+        target_room_id = interview_id
+        target_cand_id = interview_id
+        target_interview_id = interview_id
+        rubric = {}
+
+        # Resolve real IDs from interview_rooms if direct query returned no records
+        if not records:
             try:
                 rooms = await db.query("interview_rooms", room_id=interview_id)
+                if not rooms:
+                    rooms = await db.query("interview_rooms", interview_id=interview_id)
                 if rooms:
-                    real_id = rooms[0].get("interview_id")
-                    if real_id:
-                        records = await db.query("scorecards", interview_id=real_id)
-            except Exception:
-                pass
+                    r = rooms[0]
+                    target_room_id = r.get("room_id") or interview_id
+                    target_cand_id = r.get("candidate_id") or interview_id
+                    target_interview_id = r.get("interview_id") or interview_id
+                    rubric = (r.get("metadata") or {}).get("rubric") or {}
 
-        # E09 FIX: Return 404 instead of fake data — HR must see real results only
+                    if target_interview_id:
+                        records = await db.query("scorecards", interview_id=target_interview_id)
+                    if not records and target_room_id:
+                        records = await db.query("scorecards", interview_id=target_room_id)
+                    if not records and target_cand_id:
+                        records = await db.query("scorecards", candidate_id=target_cand_id)
+            except Exception as exc:
+                logger.warning("Error resolving room for evaluation %s: %s", interview_id, exc)
+
+        # On-demand evaluation fallback: generate scorecard on-the-fly if transcript exists
+        if not records:
+            logger.info("No scorecard found for %s — running on-demand evaluation fallback", interview_id)
+            try:
+                if target_cand_id == interview_id:
+                    cands = await db.query("candidates", id=interview_id)
+                    if cands:
+                        target_cand_id = cands[0].get("id", interview_id)
+
+                qa_logs = await db.query("interview_qa_logs", session_id=target_room_id)
+                if not qa_logs:
+                    qa_logs = await db.query("interview_qa_logs", session_id=target_interview_id)
+                if not qa_logs:
+                    qa_logs = await db.query("interview_qa_logs", session_id=interview_id)
+
+                live_turns = []
+                if qa_logs:
+                    sorted_logs = sorted(qa_logs, key=lambda x: x.get("question_number", 0))
+                    for log in sorted_logs:
+                        q_t = log.get("question_text", "")
+                        c_t = log.get("candidate_answer_transcript", "")
+                        if q_t:
+                            live_turns.append({"speaker": "interviewer", "text": q_t})
+                        if c_t:
+                            live_turns.append({"speaker": "candidate", "text": c_t})
+
+                from app.agents.evaluator_agent import EvaluatorAgent
+                evaluator = EvaluatorAgent(run_id="run-ondemand-eval")
+                eval_payload = await evaluator.evaluate_transcript(
+                    interview_id=target_interview_id,
+                    candidate_id=target_cand_id,
+                    rubric=rubric,
+                    transcript_turns=live_turns,
+                )
+                if eval_payload and isinstance(eval_payload, dict):
+                    records = [eval_payload]
+            except Exception as eval_err:
+                logger.error("On-demand evaluation failed for %s: %s", interview_id, eval_err)
+
         if not records:
             raise HTTPException(
                 status_code=404,
@@ -347,13 +404,9 @@ def create_app() -> FastAPI:
 
         rec = records[0]
 
-        # E05 FIX: Normalize response — ensure all frontend-expected top-level
-        # keys are present regardless of how Supabase stores nested JSONB.
-        # If Supabase wraps everything under a 'data' column, unwrap it.
         if "data" in rec and isinstance(rec["data"], dict) and "scorecard" not in rec:
             rec = {**rec, **rec["data"]}
 
-        # Guarantee minimum shape the frontend destructures
         normalized = {
             "interview_id": rec.get("interview_id", interview_id),
             "candidate_id": rec.get("candidate_id", "Unknown"),

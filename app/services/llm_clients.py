@@ -5,26 +5,48 @@ import httpx
 
 from app.config import settings
 
+import logging
+
+logger = logging.getLogger("talentops.llm_clients")
+
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "nvidia/llama-3.1-nemotron-70b-instruct:free"
+OPENROUTER_FALLBACK_MODELS = [
+    "meta-llama/llama-3.3-70b-instruct",
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "google/gemini-2.0-flash-lite-001",
+    "deepseek/deepseek-r1:free",
+]
 
 
-async def _post(url: str, key: str, model: str, messages: list[dict], json_mode: bool, max_tokens: int | None = None) -> str:
+async def _post(
+    url: str,
+    key: str,
+    model: str,
+    messages: list[dict],
+    json_mode: bool,
+    max_tokens: int | None = None,
+    extra_headers: dict | None = None,
+) -> str:
     body: dict = {"model": model, "messages": messages}
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     if max_tokens:
         body["max_tokens"] = max_tokens
+
+    headers = {"Authorization": f"Bearer {key}"}
+    if extra_headers:
+        headers.update(extra_headers)
+
     last: Exception | None = None
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
+                r = await client.post(url, json=body, headers=headers)
                 r.raise_for_status()
                 return r.json()["choices"][0]["message"]["content"]
-        except Exception as e:  # RPM limits / transient — retry with backoff
+        except Exception as e:
             last = e
             await asyncio.sleep(0.5 * 2**attempt)
     raise last  # type: ignore[misc]
@@ -41,11 +63,47 @@ async def groq_chat(messages: list[dict], json_mode: bool = False, max_tokens: i
             return await _post(GROQ_URL, key, GROQ_MODEL, messages, json_mode, max_tokens)
         except Exception as e:
             last_error = e
-            # Log key failover and try next key if available
             continue
 
     raise last_error  # type: ignore[misc]
 
 
 async def openrouter_chat(messages: list[dict], json_mode: bool = False, max_tokens: int | None = None) -> str:
-    return await _post(OPENROUTER_URL, settings.OPENROUTER_API_KEY, OPENROUTER_MODEL, messages, json_mode, max_tokens)
+    key = getattr(settings, "OPENROUTER_API_KEY", "") or ""
+    if not key or "your-openrouter-api-key" in key:
+        # If OpenRouter key is not set or placeholder, failover to groq_chat
+        try:
+            return await groq_chat(messages, json_mode, max_tokens)
+        except Exception as exc:
+            logger.warning("Failover to groq_chat failed: %s", exc)
+        raise ValueError("OPENROUTER_API_KEY is not configured in environment.")
+
+    extra_headers = {
+        "HTTP-Referer": "https://talentops.local",
+        "X-Title": "TalentOps",
+    }
+
+    last_error: Exception | None = None
+    for model in OPENROUTER_FALLBACK_MODELS:
+        try:
+            return await _post(
+                OPENROUTER_URL,
+                key,
+                model,
+                messages,
+                json_mode,
+                max_tokens,
+                extra_headers=extra_headers,
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.warning("OpenRouter call failed for model %s: %s", model, exc)
+
+    # If OpenRouter model calls failed, try failing over to groq_chat
+    try:
+        logger.info("OpenRouter model attempts failed — failing over to groq_chat")
+        return await groq_chat(messages, json_mode, max_tokens)
+    except Exception:
+        pass
+
+    raise last_error or RuntimeError("OpenRouter completion failed across all fallback models.")

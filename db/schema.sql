@@ -167,9 +167,11 @@ create index if not exists qa_logs_session_idx on public.interview_qa_logs (sess
 
 create table if not exists public.hr_debrief_sessions (
     id                uuid primary key default gen_random_uuid(),
+    debrief_id        text unique null,
     interview_id      text not null,
-    candidate_id      text not null,
-    meet_link         text not null,
+    candidate_id      text null,
+    meet_link         text null,
+    room_url          text null,
     status            text not null default 'Manager Agent Waiting',
     summary           text default '',
     knowledge_context jsonb not null default '{}'::jsonb,
@@ -178,3 +180,4 @@ create table if not exists public.hr_debrief_sessions (
 );
 
 create index if not exists hr_debrief_interview_idx on public.hr_debrief_sessions (interview_id);
+create index if not exists hr_debrief_debrief_idx on public.hr_debrief_sessions (debrief_id);
