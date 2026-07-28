@@ -78,10 +78,20 @@ def _address_for(candidate: str, candidate_email: str | None = None) -> str:
         return candidate_email
     if candidate and "@" in candidate:
         return candidate
+
+    # Try database lookup
     if candidate and isinstance(candidate, str):
+        try:
+            cand_rows = db.query_sync("candidates", id=candidate)
+            if cand_rows and cand_rows[0].get("email") and "@" in cand_rows[0]["email"]:
+                return cand_rows[0]["email"]
+        except Exception:
+            pass
+
         safe_name = candidate.lower().replace(" ", ".")
-        logger.warning("No explicit email provided for candidate '%s', falling back to %s@example.com", candidate, safe_name)
+        logger.warning("No stored email in database for candidate '%s', using fallback %s@example.com", candidate, safe_name)
         return f"{safe_name}@example.com"
+
     raise ValueError(f"Invalid or missing candidate email for '{candidate}'. Cannot send email.")
 
 

@@ -41,11 +41,12 @@ def _emit(run_id: str, name: str, result: dict) -> dict:
     return make_envelope(sender=name, recipient="manager", kind="result", body=result)
 
 
-def sourcing_node(state: PipelineState) -> dict:
+async def sourcing_node(state: PipelineState) -> dict:
     from app.graph.state import WorkflowStage
+    from app.agents.sourcing import run_sourcing_async
     run_id = state["run_id"]
     log_event(run_id, source="sourcing", event_type="agent_started", payload={"goal": state["goal"]})
-    result = run_sourcing(run_id, state["goal"], state.get("corpus"))
+    result = await run_sourcing_async(run_id, state["goal"], state.get("corpus"))
 
     rubric = generate_rubric(run_id, state.get("standard") or state["goal"])
     log_event(run_id, source="screening", event_type="rubric_frozen",

@@ -1,22 +1,32 @@
 """Unified Resume Parsing Service (PDF, DOCX, TXT/MD).
 
 Supports parsing raw bytes or file paths into a structured ParsedResume object.
-Validates file extensions, size limits, and sanitizes input data.
+Extracts section-by-section details (Name, Email, Phone, Summary, Skills, Experience, Education, Projects).
+Validates file extensions, size limits, and sanitizes input data without inserting fake emails.
 """
 from __future__ import annotations
 
 import io
 import logging
-import re
 import os
+import re
 from typing import Any
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("talentops.parser")
 
 _EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+_PHONE_REGEX = re.compile(r"\+?\d{1,3}[-.\s]?(?:\(\d{1,4}\)[-.\s]?)?\d{2,5}[-.\s]?\d{3,5}")
 _ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 _DEFAULT_MAX_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB limit
+
+TECH_SKILLS_KEYWORDS = [
+    "python", "java", "c++", "golang", "rust", "javascript", "typescript",
+    "react", "vue", "angular", "node.js", "express", "django", "fastapi", "flask",
+    "postgresql", "postgres", "mysql", "mongodb", "redis", "docker", "kubernetes",
+    "aws", "gcp", "azure", "asyncio", "graphql", "rest api", "restful", "ci/cd", "git",
+    "system design", "microservices", "kafka", "pytorch", "tensorflow"
+]
 
 
 class ResumeParseError(Exception):
@@ -34,6 +44,29 @@ class FileTooLargeError(ResumeParseError):
     pass
 
 
+class CandidateProject(BaseModel):
+    """Structured project entry from candidate resume."""
+    title: str
+    description: str = ""
+    technologies: list[str] = Field(default_factory=list)
+    url: str = ""
+
+
+class CandidateExperience(BaseModel):
+    """Structured work experience entry."""
+    company: str = ""
+    role: str = ""
+    dates: str = ""
+    description: str = ""
+
+
+class CandidateEducation(BaseModel):
+    """Structured education entry."""
+    degree: str = ""
+    institution: str = ""
+    year: str = ""
+
+
 class ParsedResume(BaseModel):
     """Structured result of resume parsing."""
     raw_text: str
@@ -41,14 +74,19 @@ class ParsedResume(BaseModel):
     file_type: str
     email: str = ""
     candidate_name: str = ""
+    phone: str = ""
+    summary: str = ""
     skills: list[str] = Field(default_factory=list)
+    projects: list[CandidateProject] = Field(default_factory=list)
+    experience: list[CandidateExperience] = Field(default_factory=list)
+    education: list[CandidateEducation] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def clean_candidate_name(raw_name: str) -> str:
     """Clean up a raw filename or text line to extract a candidate full name."""
     if not raw_name:
-        return "Candidate"
+        return ""
 
     # 1. Remove file extensions
     cleaned = re.sub(r"\.(pdf|docx|doc|txt|md)$", "", str(raw_name).strip(), flags=re.IGNORECASE)
@@ -75,12 +113,52 @@ def clean_candidate_name(raw_name: str) -> str:
 
     if cleaned and len(cleaned) >= 2:
         return cleaned.title()
-    return "Candidate"
+    return ""
+
+
+def extract_email_from_text(text: str) -> str:
+    """Extract candidate email address from resume text. Never invents fake emails."""
+    matches = _EMAIL_REGEX.findall(text or "")
+    if matches:
+        for m in matches:
+            if not any(ignore in m.lower() for ignore in ["example.com", "domain.com", "github.com", "w3.org"]):
+                return m
+        return matches[0]
+    return ""
+
+
+def extract_phone_from_text(text: str) -> str:
+    """Extract phone number from resume text using regex."""
+    top_lines = (text or "").splitlines()[:20]
+    top_text = "\n".join(top_lines)
+    matches = _PHONE_REGEX.findall(top_text)
+    if matches:
+        for m in matches:
+            digits = re.sub(r"\D", "", m)
+            if 7 <= len(digits) <= 15:
+                return m.strip()
+    return ""
+
+
+def extract_skills_word_boundary(text: str) -> list[str]:
+    """Extract skills using word boundaries to prevent false positives (e.g. 'go' in 'going')."""
+    lower_text = (text or "").lower()
+    found_skills = []
+    for skill in TECH_SKILLS_KEYWORDS:
+        # Escape special regex chars like ++ in C++
+        pattern = r"\b" + re.escape(skill) + r"\b"
+        if re.search(pattern, lower_text):
+            found_skills.append(skill)
+    return found_skills
 
 
 def extract_candidate_metadata(resume_text: str, file_name: str | None = None) -> dict[str, str]:
-    """Extract candidate full name and email from top 10-15 lines of resume text."""
+    """Extract candidate full name, email, and phone from resume text.
+    
+    Strictly avoids fake email generation (@example.com) and fallback defaults like 'Candidate'.
+    """
     email = extract_email_from_text(resume_text or "")
+    phone = extract_phone_from_text(resume_text or "")
 
     extracted_name = ""
     lines = [line.strip() for line in (resume_text or "").splitlines() if line.strip()]
@@ -90,7 +168,8 @@ def extract_candidate_metadata(resume_text: str, file_name: str | None = None) -
         "curriculum", "vitae", "resume", "cv", "summary", "experience", "education",
         "profile", "contact", "page", "phone", "email", "skills", "projects", "senior",
         "junior", "lead", "staff", "principal", "engineer", "developer", "architect",
-        "manager", "data", "software", "fullstack", "backend", "frontend"
+        "manager", "data", "software", "fullstack", "backend", "frontend", "technologies",
+        "objective", "work", "history"
     }
 
     for line in top_lines:
@@ -112,30 +191,89 @@ def extract_candidate_metadata(resume_text: str, file_name: str | None = None) -
 
     if not extracted_name and file_name:
         extracted_name = clean_candidate_name(file_name)
-    elif not extracted_name:
-        extracted_name = "Candidate"
-    else:
+    elif extracted_name:
         extracted_name = clean_candidate_name(extracted_name)
-
-    if not email or "@" not in email:
-        safe_email_name = extracted_name.lower().replace(" ", ".")
-        email = f"{safe_email_name}@example.com"
 
     return {
         "full_name": extracted_name,
         "email": email,
+        "phone": phone,
     }
 
 
-def extract_email_from_text(text: str) -> str:
-    """Extract candidate email address from resume text."""
-    matches = _EMAIL_REGEX.findall(text or "")
-    if matches:
-        for m in matches:
-            if not any(ignore in m.lower() for ignore in ["example.com", "domain.com", "github.com", "w3.org"]):
-                return m
-        return matches[0]
-    return ""
+def extract_sections_by_regex(text: str) -> dict[str, str]:
+    """Parse text into section headers: SUMMARY, SKILLS, PROJECTS, EXPERIENCE, EDUCATION."""
+    headers_pat = re.compile(
+        r"\n(?=\s*(?:PROJECTS?|WORK\s+EXPERIENCE|EXPERIENCE|EMPLOYMENT\s+HISTORY|EDUCATION|TECHNICAL\s+SKILLS|SKILLS|SUMMARY|PROFESSIONAL\s+SUMMARY|OBJECTIVE)\b[:\s\n])",
+        re.IGNORECASE,
+    )
+    parts = headers_pat.split(text)
+    sections: dict[str, str] = {}
+
+    for part in parts:
+        part_clean = part.strip()
+        if not part_clean:
+            continue
+        header_match = re.match(
+            r"^(PROJECTS?|WORK\s+EXPERIENCE|EXPERIENCE|EMPLOYMENT\s+HISTORY|EDUCATION|TECHNICAL\s+SKILLS|SKILLS|SUMMARY|PROFESSIONAL\s+SUMMARY|OBJECTIVE)\b[:\s\n]*(.*)",
+            part_clean,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if header_match:
+            hdr_name = header_match.group(1).upper()
+            hdr_body = header_match.group(2).strip()
+            if "PROJECT" in hdr_name:
+                sections["projects"] = hdr_body
+            elif "EXPERIENCE" in hdr_name or "EMPLOYMENT" in hdr_name:
+                sections["experience"] = hdr_body
+            elif "EDUCATION" in hdr_name:
+                sections["education"] = hdr_body
+            elif "SKILL" in hdr_name:
+                sections["skills"] = hdr_body
+            elif "SUMMARY" in hdr_name or "OBJECTIVE" in hdr_name:
+                sections["summary"] = hdr_body
+        else:
+            if "header" not in sections:
+                sections["header"] = part_clean
+
+    return sections
+
+
+def extract_projects_from_section(projects_text: str) -> list[CandidateProject]:
+    """Extract individual projects from a project section block."""
+    if not projects_text or not projects_text.strip():
+        return []
+
+    projects: list[CandidateProject] = []
+    # Split by bullet headers or blank lines/numeric prefixes
+    items = re.split(r"\n(?=\s*(?:[•\-*\d+\.]|[A-Z][a-zA-Z0-9\s]{3,30}:))", projects_text)
+
+    for item in items:
+        item_str = item.strip()
+        if not item_str or len(item_str) < 5:
+            continue
+        lines = [l.strip() for l in item_str.splitlines() if l.strip()]
+        title = lines[0].lstrip("•-*123456789. ").strip()
+        desc = " ".join(lines[1:]) if len(lines) > 1 else ""
+
+        # Extract URLs if any
+        urls = re.findall(r"https?://[^\s]+", item_str)
+        url = urls[0] if urls else ""
+
+        # Extract tech stack
+        skills_used = extract_skills_word_boundary(item_str)
+
+        if title:
+            projects.append(
+                CandidateProject(
+                    title=title[:150],
+                    description=desc[:1000],
+                    technologies=skills_used,
+                    url=url,
+                )
+            )
+
+    return projects
 
 
 def parse_pdf_bytes(pdf_bytes: bytes) -> str:
@@ -221,7 +359,7 @@ def parse_resume_bytes(
     file_name: str = "resume.pdf",
     max_size_bytes: int = _DEFAULT_MAX_SIZE_BYTES,
 ) -> ParsedResume:
-    """Parse resume raw bytes into a ParsedResume object with strict validation."""
+    """Parse resume raw bytes into a structured ParsedResume object with section-by-section breakdown."""
     if len(content) > max_size_bytes:
         raise FileTooLargeError(
             f"File size ({len(content)} bytes) exceeds maximum limit of {max_size_bytes} bytes"
@@ -249,8 +387,17 @@ def parse_resume_bytes(
         raise ResumeParseError("Extracted text from resume is empty or missing")
 
     meta = extract_candidate_metadata(raw_text, file_name=file_name)
-    email = meta.get("email") or extract_email_from_text(raw_text)
-    candidate_name = meta.get("full_name") or clean_candidate_name(file_name)
+    email = meta.get("email") or ""
+    phone = meta.get("phone") or ""
+    candidate_name = meta.get("full_name") or ""
+
+    sections = extract_sections_by_regex(raw_text)
+    summary = sections.get("summary") or ""
+    skills = extract_skills_word_boundary(raw_text)
+
+    # Extract projects from projects section or full text
+    projects_raw = sections.get("projects") or ""
+    projects = extract_projects_from_section(projects_raw)
 
     return ParsedResume(
         raw_text=raw_text,
@@ -258,12 +405,16 @@ def parse_resume_bytes(
         file_type=file_type,
         email=email,
         candidate_name=candidate_name,
+        phone=phone,
+        summary=summary,
+        skills=skills,
+        projects=projects,
         metadata={"content_length": len(content), "char_count": len(raw_text)}
     )
 
 
 def parse_resume(path: str) -> ParsedResume:
-    """Parse a resume file path."""
+    """Parse a resume file path into ParsedResume."""
     if not os.path.exists(path):
         raise ResumeParseError(f"Resume file path does not exist: {path}")
 

@@ -79,6 +79,11 @@ create table if not exists public.candidates (
     role_id      text references public.roles(id) on delete cascade,
     name         text not null,
     email        text        null,                   -- extracted from resume PDF
+    phone        text        default '',             -- candidate phone number
+    summary      text        default '',             -- candidate resume summary
+    skills       jsonb       default '[]'::jsonb,    -- extracted candidate skills list
+    experience   jsonb       default '[]'::jsonb,    -- extracted work experience entries
+    education    jsonb       default '[]'::jsonb,    -- extracted education entries
     resume       text        default '',
     raw_text     text        default '',             -- full plain-text of the uploaded resume
     resume_path  text        default '',             -- local path to the uploaded file
@@ -86,6 +91,18 @@ create table if not exists public.candidates (
 );
 
 create index if not exists candidates_email_idx on public.candidates (email);
+
+create table if not exists public.projects (
+    id           uuid primary key default gen_random_uuid(),
+    candidate_id text not null references public.candidates(id) on delete cascade,
+    title        text not null,
+    description  text default '',
+    technologies jsonb default '[]'::jsonb,
+    url          text default '',
+    created_at   timestamptz default now()
+);
+
+create index if not exists projects_candidate_id_idx on public.projects (candidate_id);
 
 create table if not exists public.interviews (
     id            text primary key,

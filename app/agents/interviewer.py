@@ -158,9 +158,11 @@ async def generate_dynamic_question(
         "Output the question text only — nothing else."
     )
 
+    turn_num = len(history) + 1
     if is_first_turn:
         system_prompt = (
             f"You are a Senior Technical Interviewer for the role: {job_title}.\n"
+            f"Turn 1 (Opening Question)\n"
             f"Candidate Resume: {parsed_resume_text[:1500]}\n"
             f"Role Requirements: {job_description[:800]}\n"
             f"Interview Phase: {state_str}\n"
@@ -172,12 +174,14 @@ async def generate_dynamic_question(
     else:
         system_prompt = (
             f"You are a Senior Technical Interviewer for the role: {job_title}.\n"
+            f"Turn {turn_num}\n"
             f"Candidate Resume: {parsed_resume_text[:1500]}\n"
             f"Role Requirements: {job_description[:800]}\n"
             f"Interview Phase: {state_str}\n"
             f"Uncovered Competencies: {uncovered_text}\n"
-            f"Recent Interview History ({len(history_summary)} turns): {history_summary}\n"
+            f"Full Interview History So Far ({len(history_summary)} turns): {history_summary}\n"
             f"Latest Candidate Answer: {last_candidate_answer[:600]}\n\n"
+            f"Do NOT claim or state that this is the beginning of the interview.\n"
             f"Generate ONE follow-up question that probes deeper on '{uncovered_text}', "
             f"references something specific the candidate just said, and is NOT semantically "
             f"similar to: {asked_questions_list[-5:] if asked_questions_list else []}.\n"
@@ -199,7 +203,7 @@ async def generate_dynamic_question(
 
         # BUG-02: cap at 100 tokens so the LLM cannot produce verbose multi-sentence questions
         question = ""
-        if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
+        if settings.LLM_PROVIDER == "groq" and (settings.GROQ_API_KEY or getattr(settings, "GROQ_API_KEY2", "")):
             question = await groq_chat(messages, max_tokens=100)
         elif settings.OPENROUTER_API_KEY:
             question = await openrouter_chat(messages, max_tokens=100)

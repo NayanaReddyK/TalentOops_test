@@ -31,7 +31,20 @@ async def _post(url: str, key: str, model: str, messages: list[dict], json_mode:
 
 
 async def groq_chat(messages: list[dict], json_mode: bool = False, max_tokens: int | None = None) -> str:
-    return await _post(GROQ_URL, settings.GROQ_API_KEY, GROQ_MODEL, messages, json_mode, max_tokens)
+    keys = [k for k in [getattr(settings, "GROQ_API_KEY", ""), getattr(settings, "GROQ_API_KEY2", "")] if k]
+    if not keys:
+        raise ValueError("No Groq API keys configured in environment.")
+
+    last_error = None
+    for key in keys:
+        try:
+            return await _post(GROQ_URL, key, GROQ_MODEL, messages, json_mode, max_tokens)
+        except Exception as e:
+            last_error = e
+            # Log key failover and try next key if available
+            continue
+
+    raise last_error  # type: ignore[misc]
 
 
 async def openrouter_chat(messages: list[dict], json_mode: bool = False, max_tokens: int | None = None) -> str:

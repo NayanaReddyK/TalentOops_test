@@ -38,12 +38,13 @@ def test_k_anonymity_suppression():
 
 from unittest.mock import patch, AsyncMock, MagicMock
 
+@pytest.mark.asyncio
 @patch("app.supabase_client._insert_sync")
 @patch("app.services.database.db.insert", new_callable=AsyncMock)
 @patch("smtplib.SMTP")
 @patch("app.embeddings.embedder.RemoteEmbedder.embed", return_value=[0.1] * 384)
 @patch("app.embeddings.embedder.RemoteEmbedder.embed_batch", return_value=[[0.1] * 384])
-def test_reporting_node_emits_stage_and_envelope(mock_embed_batch, mock_embed, mock_smtp, mock_insert, mock_log_event):
+async def test_reporting_node_emits_stage_and_envelope(mock_embed_batch, mock_embed, mock_smtp, mock_insert, mock_log_event):
     mock_smtp.return_value = MagicMock()
     state = {
         "run_id": "run-301",
@@ -54,7 +55,7 @@ def test_reporting_node_emits_stage_and_envelope(mock_embed_batch, mock_embed, m
         "completed": ["interviewer"],
         "messages": [],
     }
-    result_state = reporting_node(state)
+    result_state = await reporting_node(state)
     assert result_state["stage"] == "HR_DEBRIEF"
     assert "reporting" in result_state["completed"]
     assert len(result_state["messages"]) == 1

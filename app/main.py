@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from fastapi import FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -195,27 +196,51 @@ def create_app() -> FastAPI:
 
         from app.services.parser import extract_candidate_metadata, clean_candidate_name
         meta = extract_candidate_metadata(parsed.raw_text, file_name=filename)
-        cand_name = meta.get("full_name") or parsed.candidate_name or clean_candidate_name(filename)
-        cand_email = meta.get("email") or parsed.email
-        if not cand_email or "@" not in cand_email:
-            safe_email_name = cand_name.lower().replace(" ", ".")
-            cand_email = f"{safe_email_name}@example.com"
+        cand_name = meta.get("full_name") or parsed.candidate_name or clean_candidate_name(filename) or "Candidate"
+        cand_email = meta.get("email") or parsed.email or ""
 
-        cand_id = filename.rsplit(".", 1)[0].replace(" ", "_")
+        # Unique, collision-free candidate ID
+        clean_prefix = re.sub(r"[^a-zA-Z0-9_-]", "_", filename.rsplit(".", 1)[0])[:20]
+        cand_id = f"{clean_prefix}_{uuid.uuid4().hex[:8]}"
 
         from app.services.database import db
         try:
             await db.insert("candidates", {
                 "id": cand_id,
                 "name": cand_name,
-                "email": cand_email,
+                "email": cand_email if cand_email else None,
+                "phone": parsed.phone or "",
+                "summary": parsed.summary or "",
+                "skills": parsed.skills or [],
+                "experience": [e.model_dump() for e in parsed.experience] if parsed.experience else [],
+                "education": [e.model_dump() for e in parsed.education] if parsed.education else [],
                 "raw_text": parsed.raw_text,
                 "resume_path": path,
             })
+
+            for proj in parsed.projects:
+                try:
+                    await db.insert("projects", {
+                        "candidate_id": cand_id,
+                        "title": proj.title,
+                        "description": proj.description,
+                        "technologies": proj.technologies,
+                        "url": proj.url,
+                    })
+                except Exception as proj_exc:
+                    logger.warning("Supabase insert project notice: %s", proj_exc)
+
         except Exception as exc:
             logger.warning("Supabase insert candidate notice: %s", exc)
 
-        return {"status": "uploaded", "path": path, "candidate_id": cand_id, "candidate_name": cand_name, "email": cand_email}
+        return {
+            "status": "uploaded",
+            "path": path,
+            "candidate_id": cand_id,
+            "candidate_name": cand_name,
+            "email": cand_email,
+            "projects_count": len(parsed.projects),
+        }
 
     class ScheduleInterviewRequest(BaseModel):
         candidate_id: str

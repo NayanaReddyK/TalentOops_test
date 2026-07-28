@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # AI Services
     GEMINI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
+    GROQ_API_KEY2: str = ""
     OPENROUTER_API_KEY: str = ""
 
     # Self-hosted Interview Room

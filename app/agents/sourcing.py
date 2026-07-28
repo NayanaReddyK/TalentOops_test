@@ -1,27 +1,26 @@
-"""Sourcing sub-agent: resume corpus -> parsed profiles -> enriched -> embedded."""
+"""Sourcing sub-agent: resume corpus -> parsed profiles -> database persistence -> embedded."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
 from typing import Any
 
-from app.agents.scraper import get_scraper
 from app.embeddings.embedder import get_embedder
 from app.embeddings.store import upsert_embedding
-from app.llm.client import get_llm_client
+from app.services.parser import parse_resume_bytes, extract_email_from_text, ResumeParseError, ParsedResume
 
 logger = logging.getLogger("talentops.sourcing")
-
-# _MOCK_CORPUS removed — no silent mock fallback in production.
-# Real candidate resume files must be supplied via the `corpus` parameter.
-
-
-from app.services.parser import parse_resume, extract_email_from_text, ResumeParseError
 
 
 def parse_pdf(path: str) -> str:
     """Extract text from a PDF, DOCX, or text resume file."""
     try:
-        parsed = parse_resume(path)
+        if not path or not isinstance(path, str):
+            raise ResumeParseError("Invalid path provided")
+        with open(path, "rb") as f:
+            content = f.read()
+        parsed = parse_resume_bytes(content, file_name=path)
         return parsed.raw_text
     except ResumeParseError as e:
         logger.error("Failed to parse resume file %s: %s", path, e)
@@ -31,35 +30,16 @@ def parse_pdf(path: str) -> str:
         raise ResumeParseError(f"Error parsing resume content at {path}: {e}") from e
 
 
-
-
-def extract_profile(text: str, file_name: str | None = None) -> dict[str, Any]:
-    """Structured profile extraction via the LLM client."""
+def extract_profile(text: str, file_name: str | None = None) -> ParsedResume:
+    """Structured profile extraction from resume raw text."""
     if not text or not isinstance(text, str) or not text.strip():
         raise ValueError(f"Resume text is empty or invalid for file {file_name}")
 
-    from app.services.parser import extract_candidate_metadata, clean_candidate_name
-    meta = extract_candidate_metadata(text, file_name=file_name)
+    fname = file_name or "resume.pdf"
+    if not fname.endswith((".pdf", ".docx", ".txt", ".md")):
+        fname = f"{fname}.pdf"
 
-    llm = get_llm_client()
-    try:
-        profile = llm.complete_json(
-            system="Extract a candidate profile from the resume text.",
-            user=text,
-            schema_hint={"name": "str", "email": "str", "skills": "list[str]", "years_experience": "int", "summary": "str"},
-        )
-    except Exception:
-        profile = {}
-
-    extracted_name = profile.get("name") if isinstance(profile, dict) else ""
-    if not extracted_name or extracted_name == "Candidate":
-        extracted_name = meta.get("full_name") or clean_candidate_name(file_name)
-    else:
-        extracted_name = clean_candidate_name(extracted_name)
-
-    profile["name"] = extracted_name
-    profile["email"] = (profile.get("email") if isinstance(profile, dict) else None) or meta.get("email") or extract_email_from_text(text)
-    return profile
+    return parse_resume_bytes(text.encode("utf-8"), file_name=fname)
 
 
 def _load_corpus(corpus: list[dict] | None) -> list[dict]:
@@ -74,67 +54,124 @@ def _load_corpus(corpus: list[dict] | None) -> list[dict]:
                     try:
                         text = parse_pdf(fpath)
                         email = extract_email_from_text(text)
-                        loaded_temp.append({"id": fname.rsplit(".", 1)[0], "text": text, "email": email})
+                        loaded_temp.append({"id": fname.rsplit(".", 1)[0], "text": text, "email": email, "pdf_path": fpath})
                     except Exception as exc:
                         logger.error("Failed to load temp upload resume %s: %s", fname, exc)
         if loaded_temp:
             return loaded_temp
 
-        logger.error(
-            "run_sourcing called with no candidate corpus. "
-            "Supply resume files via the `corpus` parameter. "
-            "No mock data will be injected."
-        )
+        logger.error("run_sourcing called with no candidate corpus. Supply resume files via corpus.")
         return []
+
     loaded = []
     for item in corpus:
         if "pdf_path" in item:
             try:
                 text = parse_pdf(item["pdf_path"])
                 email = extract_email_from_text(text)
-                loaded.append({"id": item["id"], "text": text, "email": email})
+                loaded.append({
+                    "id": item.get("id") or f"cand_{uuid.uuid4().hex[:10]}",
+                    "text": text,
+                    "email": email,
+                    "pdf_path": item["pdf_path"]
+                })
             except Exception as exc:
                 logger.error("Failed to load resume for candidate %s: %s", item.get("id"), exc)
         else:
             loaded.append(item)
-    if not loaded:
-        logger.error(
-            "Corpus supplied but no valid candidate resumes could be loaded. "
-            "Check file paths and formats. No mock data will be injected."
-        )
     return loaded
 
 
-def run_sourcing(run_id: str, goal: str, corpus: list[dict] | None = None) -> dict[str, Any]:
+async def run_sourcing_async(run_id: str, goal: str, corpus: list[dict] | None = None) -> dict[str, Any]:
+    """Async candidate sourcing pipeline: parse -> database persistence (candidates & projects) -> embedding."""
     embedder = get_embedder()
-    scraper = get_scraper()
     profiles: list[dict[str, Any]] = []
+
+    from app.services.database import db
 
     for entry in _load_corpus(corpus):
         try:
-            profile = extract_profile(entry["text"], file_name=entry.get("id"))
-            cand_name = profile.get("name") or "Candidate"
-            cand_email = profile.get("email") or entry.get("email") or f"{entry['id']}@example.com"
-            profile["name"] = cand_name
-            profile["email"] = cand_email
+            cand_id = entry.get("id") or f"cand_{uuid.uuid4().hex[:10]}"
+            parsed = extract_profile(entry["text"], file_name=entry.get("pdf_path") or f"{cand_id}.pdf")
 
-            context = scraper.enrich(f"https://example.com/{entry['id']}", text_content=entry["text"])
-            merged_skills = list({*(profile.get("skills") or []), *context.get("skills", [])})
+            cand_name = parsed.candidate_name or f"Candidate {cand_id[:6]}"
+            cand_email = parsed.email or entry.get("email") or ""
+            cand_phone = parsed.phone or ""
+            cand_summary = parsed.summary or ""
+            cand_skills = parsed.skills or []
+            cand_projects = parsed.projects or []
 
-            text_for_embed = f"{profile.get('summary', '')} {' '.join(merged_skills)}"
+            # 1. Database persistence: Save candidate to candidates table
+            try:
+                await db.insert("candidates", {
+                    "id": cand_id,
+                    "name": cand_name,
+                    "email": cand_email if cand_email else None,
+                    "phone": cand_phone,
+                    "summary": cand_summary,
+                    "skills": cand_skills,
+                    "experience": [e.model_dump() for e in parsed.experience] if parsed.experience else [],
+                    "education": [e.model_dump() for e in parsed.education] if parsed.education else [],
+                    "raw_text": entry.get("text", ""),
+                    "resume_path": entry.get("pdf_path", ""),
+                })
+            except Exception as exc:
+                logger.warning("Supabase candidate insert notice for candidate %s: %s", cand_id, exc)
 
+            # 2. Database persistence: Save projects to projects table
+            for proj in cand_projects:
+                try:
+                    await db.insert("projects", {
+                        "candidate_id": cand_id,
+                        "title": proj.title,
+                        "description": proj.description,
+                        "technologies": proj.technologies,
+                        "url": proj.url,
+                    })
+                except Exception as exc:
+                    logger.warning("Supabase project insert notice for candidate %s: %s", cand_id, exc)
+
+            # 3. Embedding vector store
+            text_for_embed = f"{cand_name} {cand_summary} {' '.join(cand_skills)}"
             vector = embedder.embed(text_for_embed)
             upsert_embedding(
                 run_id,
                 kind="candidate",
-                ref_id=entry["id"],
+                ref_id=cand_id,
                 vector=vector,
-                metadata={"profile": profile, "name": cand_name, "email": cand_email, "skills": merged_skills},
+                metadata={
+                    "name": cand_name,
+                    "email": cand_email,
+                    "skills": cand_skills,
+                    "projects_count": len(cand_projects),
+                },
             )
 
-            profiles.append({"id": entry["id"], "name": cand_name, "profile": profile, "email": cand_email, "skills": merged_skills})
+            profiles.append({
+                "id": cand_id,
+                "name": cand_name,
+                "email": cand_email,
+                "phone": cand_phone,
+                "summary": cand_summary,
+                "skills": cand_skills,
+                "projects": [p.model_dump() for p in cand_projects],
+            })
         except Exception as exc:
             logger.error("Error processing resume candidate '%s' during sourcing: %s", entry.get("id"), exc)
             continue
 
     return {"candidates": profiles, "count": len(profiles)}
+
+
+def run_sourcing(run_id: str, goal: str, corpus: list[dict] | None = None) -> dict[str, Any]:
+    """Sync wrapper for run_sourcing_async."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(run_sourcing_async(run_id, goal, corpus))
+        else:
+            return loop.run_until_complete(run_sourcing_async(run_id, goal, corpus))
+    except Exception:
+        return asyncio.run(run_sourcing_async(run_id, goal, corpus))

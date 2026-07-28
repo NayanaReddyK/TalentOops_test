@@ -128,11 +128,8 @@ async def schedule_candidate_interview(
     candidate_email = candidate.get("email") or candidate.get("resume_email")
 
     if not candidate_email or "@" not in candidate_email:
-        candidate_email = f"{candidate_id}@example.com"
-        logger.warning(
-            "No stored candidate email for %s; using placeholder %s",
-            candidate_id, candidate_email,
-        )
+        logger.error("No valid candidate email found in database for candidate: %s", candidate_id)
+        raise ValueError(f"Candidate email for '{candidate_id}' not found in database. Ensure candidate resume contains a valid email address.")
 
     # 2. Role lookup for position title
     roles      = await db.query("roles", id=role_id)

@@ -60,9 +60,34 @@ class OralInterviewAgent:
         if not transcript:
             transcript = "Candidate response"
 
-        # 2. Retrieve Candidate Resume & Role Job Description from Supabase DB
+        # 2. Retrieve Candidate Resume & Projects from Supabase DB
         candidates = await db.query("candidates", id=candidate_id)
-        candidate_resume = candidates[0].get("resume", "") if candidates else ""
+        candidate_resume = ""
+        if candidates:
+            c = candidates[0]
+            cand_name = c.get("name") or candidate_id
+            cand_email = c.get("email") or ""
+            cand_phone = c.get("phone") or ""
+            cand_summary = c.get("summary") or ""
+            cand_skills = c.get("skills") or []
+            cand_raw = c.get("raw_text") or c.get("resume") or ""
+
+            proj_rows = await db.query("projects", candidate_id=candidate_id)
+            proj_texts = []
+            for p in proj_rows:
+                techs = ", ".join(p.get("technologies") or [])
+                proj_texts.append(f"- {p.get('title')}: {p.get('description', '')} (Tech: {techs})")
+            proj_block = "\n".join(proj_texts) if proj_texts else ""
+
+            resume_blocks = [
+                f"Candidate Name: {cand_name}",
+                f"Contact: {cand_email} | {cand_phone}",
+                f"Summary: {cand_summary}" if cand_summary else "",
+                f"Extracted Skills: {', '.join(cand_skills)}" if cand_skills else "",
+                f"Key Projects:\n{proj_block}" if proj_block else "",
+                f"Resume Raw Text:\n{cand_raw}" if cand_raw else "",
+            ]
+            candidate_resume = "\n\n".join(b for b in resume_blocks if b)
 
         roles = await db.query("roles", id=role_id)
         job_description = roles[0].get("jd", "") if roles else ""

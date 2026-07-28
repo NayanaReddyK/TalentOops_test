@@ -77,8 +77,11 @@ class RemoteLLMClient:
         settings = get_settings()
         from openai import OpenAI
 
+        self.provider = provider
+        self.settings = settings
         if provider == "groq":
-            self._client = OpenAI(api_key=settings.GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+            primary_key = settings.GROQ_API_KEY or getattr(settings, "GROQ_API_KEY2", "")
+            self._client = OpenAI(api_key=primary_key, base_url="https://api.groq.com/openai/v1")
             self._model = "llama-3.3-70b-versatile"
         elif provider == "openrouter":
             self._client = OpenAI(api_key=settings.OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
@@ -87,27 +90,42 @@ class RemoteLLMClient:
             raise ValueError(f"Unknown LLM provider: {provider}")
 
     def complete_json(self, system: str, user: str, schema_hint: dict[str, Any]) -> dict[str, Any]:
-        try:
-            resp = self._client.chat.completions.create(
-                model=self._model,
-                max_tokens=512,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": f"{system}\nReturn raw JSON object matching keys: {json.dumps(list(schema_hint.keys()))}"},
-                    {"role": "user", "content": user},
-                ],
-            )
-            raw_content = resp.choices[0].message.content or "{}"
-            return _extract_json_object(raw_content, schema_hint)
-        except Exception as e:
-            logger.error(
-                "Remote LLM API call failed (model=%s). No mock fallback — real error propagated. Error: %s",
-                self._model, e,
-            )
-            raise RuntimeError(
-                f"LLM API call failed (model={self._model}): {e}. "
-                "Set LLM_PROVIDER=mock in .env to use mock mode explicitly."
-            ) from e
+        from openai import OpenAI
+        keys = []
+        if self.provider == "groq":
+            keys = [k for k in [self.settings.GROQ_API_KEY, getattr(self.settings, "GROQ_API_KEY2", "")] if k]
+        else:
+            keys = [self.settings.OPENROUTER_API_KEY]
+
+        last_error = None
+        for key in keys:
+            try:
+                base_url = "https://api.groq.com/openai/v1" if self.provider == "groq" else "https://openrouter.ai/api/v1"
+                client = OpenAI(api_key=key, base_url=base_url)
+                resp = client.chat.completions.create(
+                    model=self._model,
+                    max_tokens=512,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": f"{system}\nReturn raw JSON object matching keys: {json.dumps(list(schema_hint.keys()))}"},
+                        {"role": "user", "content": user},
+                    ],
+                )
+                raw_content = resp.choices[0].message.content or "{}"
+                return _extract_json_object(raw_content, schema_hint)
+            except Exception as e:
+                last_error = e
+                logger.warning("Remote LLM call with key ending in ...%s failed: %s. Trying next key if available.", key[-4:] if len(key)>=4 else "", e)
+                continue
+
+        logger.error(
+            "Remote LLM API call failed (model=%s). No mock fallback — real error propagated. Error: %s",
+            self._model, last_error,
+        )
+        raise RuntimeError(
+            f"LLM API call failed (model={self._model}): {last_error}. "
+            "Set LLM_PROVIDER=mock in .env to use mock mode explicitly."
+        ) from last_error
 
 
 def get_llm_client() -> LLMClient:

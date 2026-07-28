@@ -76,13 +76,34 @@ async def create_manager_debrief_session(
 
     effective_id = interview_id or run_id or "iv-default"
 
-    # 1. Fetch scorecard and candidate evaluation report from Supabase
+    # 1. Fetch candidate profile and projects from Supabase database
+    candidate_profile = {}
+    try:
+        cand_db = await db.query("candidates", id=top_cand)
+        if cand_db:
+            c = cand_db[0]
+            proj_db = await db.query("projects", candidate_id=top_cand)
+            candidate_profile = {
+                "name": c.get("name"),
+                "email": c.get("email"),
+                "phone": c.get("phone"),
+                "summary": c.get("summary"),
+                "skills": c.get("skills", []),
+                "experience": c.get("experience", []),
+                "education": c.get("education", []),
+                "projects": proj_db,
+            }
+    except Exception as exc:
+        logger.warning("Could not fetch candidate profile from DB for debrief: %s", exc)
+
+    # 2. Fetch scorecard and candidate evaluation report from Supabase
     scorecards = await db.query("scorecards", interview_id=effective_id)
     scorecard_data = scorecards[0] if scorecards else {}
 
     knowledge_context = {
         "interview_id": effective_id,
         "candidate_id": top_cand,
+        "candidate_profile": candidate_profile,
         "final_recommendation": scorecard_data.get("final_recommendation", {
             "hiring_recommendation": (final_state or {}).get("report", {}).get("decision") or "Strong Hire",
             "overall_suitability_score": 88.0,
@@ -108,6 +129,7 @@ async def create_manager_debrief_session(
     room_url = room.room_url
 
     payload = {
+        "debrief_id":       debrief_interview_id,
         "interview_id":     effective_id,
         "candidate_id":     top_cand,
         "room_url":         room_url,
@@ -196,7 +218,7 @@ async def process_hr_debrief_turn(interview_id: str, hr_question: str) -> dict[s
             {"role": "system", "content": MANAGER_DEBRIEF_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
-        if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
+        if settings.LLM_PROVIDER == "groq" and (settings.GROQ_API_KEY or getattr(settings, "GROQ_API_KEY2", "")):
             response_text = await groq_chat(messages)
         elif settings.OPENROUTER_API_KEY:
             response_text = await openrouter_chat(messages)
