@@ -305,6 +305,33 @@ function App() {
                           </div>
                         </div>
 
+                        {/* Execution Timings */}
+                        {runResult.final_state?.timings && (
+                          <div className="mt-4 pt-4 border-t border-[var(--color-glass-border)] space-y-2">
+                            <h4 className="text-[10px] font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">Execution Timings</h4>
+                            <div className="space-y-1.5 text-xs">
+                              {runResult.final_state.timings.sourcing && (
+                                <div className="flex justify-between items-center">
+                                  <span className="text-[var(--color-text-secondary)]">Sourcing</span>
+                                  <span className="font-mono text-[var(--color-accent)]">{runResult.final_state.timings.sourcing}s</span>
+                                </div>
+                              )}
+                              {runResult.final_state.timings.screening && (
+                                <div className="flex justify-between items-center">
+                                  <span className="text-[var(--color-text-secondary)]">Screening</span>
+                                  <span className="font-mono text-[var(--color-accent)]">{runResult.final_state.timings.screening}s</span>
+                                </div>
+                              )}
+                              {runResult.final_state.timings.scheduling && (
+                                <div className="flex justify-between items-center">
+                                  <span className="text-[var(--color-text-secondary)]">Scheduling</span>
+                                  <span className="font-mono text-[var(--color-accent)]">{runResult.final_state.timings.scheduling}s</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
                         {/* AI Extracted Candidate Details */}
                         {(() => {
                           const topId = runResult.final_state?.top_candidate;

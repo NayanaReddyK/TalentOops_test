@@ -51,3 +51,4 @@ class PipelineState(TypedDict, total=False):
     # Per-agent result payloads
     results: Annotated[dict[str, Any], operator.or_]
     report: dict[str, Any]
+    timings: Annotated[dict[str, float], operator.or_]

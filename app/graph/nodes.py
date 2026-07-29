@@ -5,6 +5,8 @@ deterministically and owns all user-facing communication.
 """
 from __future__ import annotations
 
+import time
+
 from app.agents.communication import send_invite
 from app.agents.interviewer import run_interview
 from app.agents.reporting import run_reporting
@@ -42,6 +44,7 @@ def _emit(run_id: str, name: str, result: dict) -> dict:
 
 
 async def sourcing_node(state: PipelineState) -> dict:
+    start_time = time.time()
     from app.graph.state import WorkflowStage
     from app.agents.sourcing import run_sourcing_async
     run_id = state["run_id"]
@@ -70,10 +73,12 @@ async def sourcing_node(state: PipelineState) -> dict:
         "top_candidate": top,
         "needs_review": False,
         "messages": [env],
+        "timings": {"sourcing": round(time.time() - start_time, 2)},
     }
 
 
 def screening_node(state: PipelineState) -> dict:
+    start_time = time.time()
     from app.graph.state import WorkflowStage
     run_id = state["run_id"]
     log_event(run_id, source="screening", event_type="agent_started", payload={})
@@ -106,10 +111,12 @@ def screening_node(state: PipelineState) -> dict:
         "top_candidate": top,
         "needs_review": False,
         "messages": [env],
+        "timings": {"screening": round(time.time() - start_time, 2)},
     }
 
 
 async def scheduling_node(state: PipelineState) -> dict:
+    start_time = time.time()
     from app.graph.state import WorkflowStage
     from app.services.database import db
     run_id = state["run_id"]
@@ -153,6 +160,7 @@ async def scheduling_node(state: PipelineState) -> dict:
         "completed": ["scheduling"],
         "results": {"scheduling": result},
         "messages": [env],
+        "timings": {"scheduling": round(time.time() - start_time, 2)},
     }
 
 
