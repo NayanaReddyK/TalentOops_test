@@ -353,44 +353,9 @@ def create_app() -> FastAPI:
             except Exception as exc:
                 logger.warning("Error resolving room for evaluation %s: %s", interview_id, exc)
 
-        # On-demand evaluation fallback: generate scorecard on-the-fly if transcript exists
-        if not records:
-            logger.info("No scorecard found for %s — running on-demand evaluation fallback", interview_id)
-            try:
-                if target_cand_id == interview_id:
-                    cands = await db.query("candidates", id=interview_id)
-                    if cands:
-                        target_cand_id = cands[0].get("id", interview_id)
-
-                qa_logs = await db.query("interview_qa_logs", session_id=target_room_id)
-                if not qa_logs:
-                    qa_logs = await db.query("interview_qa_logs", session_id=target_interview_id)
-                if not qa_logs:
-                    qa_logs = await db.query("interview_qa_logs", session_id=interview_id)
-
-                live_turns = []
-                if qa_logs:
-                    sorted_logs = sorted(qa_logs, key=lambda x: x.get("question_number", 0))
-                    for log in sorted_logs:
-                        q_t = log.get("question_text", "")
-                        c_t = log.get("candidate_answer_transcript", "")
-                        if q_t:
-                            live_turns.append({"speaker": "interviewer", "text": q_t})
-                        if c_t:
-                            live_turns.append({"speaker": "candidate", "text": c_t})
-
-                from app.agents.evaluator_agent import EvaluatorAgent
-                evaluator = EvaluatorAgent(run_id="run-ondemand-eval")
-                eval_payload = await evaluator.evaluate_transcript(
-                    interview_id=target_interview_id,
-                    candidate_id=target_cand_id,
-                    rubric=rubric,
-                    transcript_turns=live_turns,
-                )
-                if eval_payload and isinstance(eval_payload, dict):
-                    records = [eval_payload]
-            except Exception as eval_err:
-                logger.error("On-demand evaluation failed for %s: %s", interview_id, eval_err)
+        # Evaluation is triggered asynchronously by room_manager.py when the interview ends.
+        # If no records exist yet, we simply return 404 and let the frontend continue polling.
+        # This prevents a "thundering herd" of LLM evaluation requests during polling.
 
         if not records:
             raise HTTPException(

@@ -328,7 +328,7 @@ class EvaluatorAgent:
                     {"role": "user", "content": user_prompt},
                 ],
                 json_mode=True,
-                max_tokens=4096,
+                max_tokens=1500,
             )
             llm_result = _safe_llm_json(raw)
             logger.info(
