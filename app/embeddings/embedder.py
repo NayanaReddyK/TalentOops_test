@@ -158,9 +158,30 @@ class RemoteEmbedder:
 def cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
+class LocalEmbedder:
+    """Real semantic embeddings using a lightweight local sentence-transformers model."""
+    
+    def __init__(self, dim: int):
+        self.dim = dim
+        try:
+            from sentence_transformers import SentenceTransformer
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        except ImportError:
+            raise RuntimeError("sentence-transformers not installed. Run: pip install sentence-transformers")
+
+    def embed(self, text: str) -> list[float]:
+        vector = self.model.encode(text or "").tolist()
+        norm = math.sqrt(sum(v * v for v in vector)) or 1.0
+        return [v / norm for v in vector]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed(t) for t in texts]
+
 
 def get_embedder() -> Embedder:
     settings = get_settings()
     if settings.embed_provider == "mock":
         raise ValueError("Mock embed provider is no longer supported. Enforcing REAL API execution.")
+    if settings.embed_provider == "local":
+        return LocalEmbedder(settings.embed_dim)
     return RemoteEmbedder(settings.embed_provider)

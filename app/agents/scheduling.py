@@ -55,6 +55,20 @@ async def run_scheduling(
         top_candidate, room.room_url,
     )
 
+    from app.agents.calendar_client import get_calendar_client
+    calendar_client = get_calendar_client()
+    slots = calendar_client.find_slots(duration_min=duration_min, count=3)
+    
+    if slots:
+        calendar_client.book(
+            slot_iso=slots[0],
+            attendee=resolved_email,
+            summary=f"TalentOops Interview — {top_candidate}",
+            location=room.room_url,
+            description=f"Join the live interview here: {room.room_url}"
+        )
+        logger.info("Google Calendar invite sent for %s", slots[0])
+
     return {
         "status": "booked",
         "candidate_id": candidate_id,

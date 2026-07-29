@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from 'react';
+import { Loader2, Clock, AlertCircle, ChevronDown } from 'lucide-react';
 import HRDebriefCard from './HRDebriefCard';
 import EvaluationReport from './EvaluationReport';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000';
 
 export default function HREvaluationDashboard({ interviewId = 'iv-alex' }) {
   const [evaluation, setEvaluation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [isPending, setIsPending] = useState(false);
+  const [debriefOpen, setDebriefOpen] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -68,37 +70,79 @@ export default function HREvaluationDashboard({ interviewId = 'iv-alex' }) {
     return () => { isMounted = false; };
   }, [interviewId]);
 
+  /* ── Loading state ── */
   if (loading) {
     return (
-      <div className="glass-panel p-10 text-center text-cyan-400 font-mono animate-pulse">
-        ⚡ Loading HR Candidate Evaluation Report...
+      <div className="card">
+        <div className="card-body py-16 flex flex-col items-center justify-center gap-3">
+          <Loader2 className="size-8 text-cyan-400 animate-spin" />
+          <p className="text-sm text-white/50">Loading evaluation report…</p>
+        </div>
       </div>
     );
   }
 
+  /* ── Pending / generating state ── */
   if (isPending) {
     return (
-      <div className="glass-panel p-10 text-center text-amber-400 font-mono animate-pulse">
-        ⏳ Evaluation is still being processed... Retrying automatically.
+      <div className="card">
+        <div className="card-body py-16 flex flex-col items-center justify-center gap-3 animate-pulse">
+          <Clock className="size-8 text-amber-400" />
+          <p className="text-sm text-white/50">
+            Generating evaluation… This may take a moment.
+          </p>
+        </div>
       </div>
     );
   }
 
+  /* ── Error state ── */
   if (error) {
     return (
-      <div className="glass-panel p-6 border-red-500/50 bg-red-950/30 text-red-300">
-        <h3 className="font-bold mb-2">⚠️ Error Loading HR Evaluation</h3>
-        <p className="text-sm font-mono">{error}</p>
+      <div className="card border-rose-400/20">
+        <div className="card-body py-12 flex flex-col items-center justify-center gap-4">
+          <AlertCircle className="size-8 text-rose-400" />
+          <p className="text-sm text-rose-300 text-center max-w-md">{error}</p>
+          <button
+            className="btn btn-sm mt-1"
+            onClick={() => window.location.reload()}
+          >
+            Try Again
+          </button>
+        </div>
       </div>
     );
   }
 
+  /* ── Data loaded ── */
   return (
     <div className="space-y-6">
-      {/* Realtime HR Debrief Notification Card */}
-      <HRDebriefCard interviewId={interviewId} candidateId={evaluation?.candidate_id || 'c-candidate'} />
+      {/* Collapsible HR Debrief Card */}
+      <div className="card">
+        <button
+          type="button"
+          className="card-body flex items-center justify-between w-full text-left"
+          onClick={() => setDebriefOpen((o) => !o)}
+        >
+          <span className="text-sm font-medium text-white/70">HR Debrief</span>
+          <ChevronDown
+            className={`size-4 text-white/40 transition-transform duration-200 ${
+              debriefOpen ? 'rotate-180' : ''
+            }`}
+          />
+        </button>
 
-      {/* Polish Candidate Evaluation Report Component */}
+        {debriefOpen && (
+          <div className="px-5 pb-5">
+            <HRDebriefCard
+              interviewId={interviewId}
+              candidateId={evaluation?.candidate_id || 'c-candidate'}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Evaluation Report */}
       <EvaluationReport interviewId={interviewId} initialData={evaluation} />
     </div>
   );

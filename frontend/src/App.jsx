@@ -1,50 +1,57 @@
 import React, { useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import DeployBot from './components/DeployBot';
+import { Rocket, BarChart3, ClipboardList, Upload, ChevronRight, AlertCircle, X, Loader2 } from 'lucide-react';
+
+import UploadZone from './components/UploadZone';
+import PipelineVisualizer from './components/PipelineVisualizer';
 import TranscriptStream from './components/TranscriptStream';
 import FairnessHeatmap from './components/FairnessHeatmap';
 import ScorecardView from './components/ScorecardView';
-import UploadZone from './components/UploadZone';
-import PipelineVisualizer from './components/PipelineVisualizer';
 import HREvaluationDashboard from './components/HREvaluationDashboard';
 import InterviewRoom from './components/InterviewRoom';
 
-// Initialize Supabase Client
+// ── Supabase & API ────────────────────────────────────────────────────
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://qzthddhmxdcocikdhumh.supabase.co';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF6dGhkZGhteGRjb2Npa2RodW1oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxNjc4MjAsImV4cCI6MjA5OTc0MzgyMH0.VJbR0Ad8t9SgsAPc9XyFM3bkLrPocmEekjOnnPwoJss';
 const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000';
+
+// ── Navigation Items ──────────────────────────────────────────────────
+const NAV_ITEMS = [
+  { id: 'pipeline', label: 'Pipeline', icon: Rocket, description: 'Upload & Run' },
+  { id: 'results',  label: 'Results',  icon: BarChart3, description: 'Scorecard & Transcript' },
+  { id: 'evaluation', label: 'Evaluation', icon: ClipboardList, description: 'HR Report & Debrief' },
+];
 
 function App() {
-  // ── Interview Room route: /interview/{room_id} renders full-screen room ──
+  // ── Interview Room route ────────────────────────────────────────────
   const pathMatch = window.location.pathname.match(/^\/interview\/([\w-]+)/);
   if (pathMatch) {
     return <InterviewRoom roomId={pathMatch[1]} />;
   }
 
+  // ── State ───────────────────────────────────────────────────────────
   const urlParams = new URLSearchParams(window.location.search);
   const [roleId] = useState(urlParams.get('roleId') || 'r1');
-  const [candidateId] = useState(urlParams.get('candidateId') || 'c1');
-  const [interviewId, setInterviewId] = useState(urlParams.get('interviewId') || 'iv-alex');
-  const [activeTab, setActiveTab] = useState(urlParams.get('tab') || 'live'); // 'live' | 'hr'
+  const [activeView, setActiveView] = useState('pipeline');
+  const [interviewId, setInterviewId] = useState(urlParams.get('interviewId') || '');
 
-  // Pipeline execution state
+  // Pipeline state
   const [goal, setGoal] = useState('Hire a Senior Backend Engineer (Python, FastAPI, Postgres)');
-  const [standard, setStandard] = useState('Candidate must demonstrate strong experience with async Python, distributed systems, and SQL optimization');
+  const [standard, setStandard] = useState('Strong experience with async Python, distributed systems, and SQL optimization');
   const [selectedFile, setSelectedFile] = useState(null);
   const [running, setRunning] = useState(false);
   const [activeNode, setActiveNode] = useState('');
   const [completedNodes, setCompletedNodes] = useState([]);
   const [runResult, setRunResult] = useState(null);
-  const [debriefDeployed, setDebriefDeployed] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
+  // ── Pipeline Execution ──────────────────────────────────────────────
   const handleRunPipeline = async () => {
     setRunning(true);
     setActiveNode('sourcing');
     setCompletedNodes([]);
     setRunResult(null);
-    setDebriefDeployed(false);
     setErrorMessage('');
 
     try {
@@ -75,9 +82,7 @@ function App() {
         body: JSON.stringify({ goal, standard, corpus })
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`Server returned ${response.status}`);
 
       const data = await response.json();
       setRunResult(data);
@@ -88,236 +93,297 @@ function App() {
           setInterviewId(`iv-${data.final_state.top_candidate}`);
         }
       }
+
+      // Auto-switch to results view after pipeline completes
+      setActiveView('results');
     } catch (err) {
       console.error('Pipeline execution error:', err);
-      setErrorMessage(`Pipeline Error: ${err.message}. Ensure backend is running on ${API_BASE}.`);
+      setErrorMessage(err.message || 'Failed to connect to backend.');
     } finally {
       setActiveNode('');
       setRunning(false);
     }
   };
 
-  const handleDeployManagerDebrief = async () => {
-    if (!runResult?.run_id) return;
-    try {
-      setDebriefDeployed(true);
-      await fetch(`${API_BASE}/manager_debrief/deploy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ run_id: runResult.run_id })
-      });
-    } catch (err) {
-      console.error('Failed deploying manager debrief:', err);
-    }
-  };
+  const candidateRoomUrl =
+    runResult?.final_state?.results?.scheduling?.room_url ||
+    runResult?.room_url ||
+    runResult?.results?.scheduling?.room_url;
 
-  const managerDebriefInfo = runResult?.final_state?.report?.manager_debrief;
-  const candidateRoomUrl = runResult?.final_state?.results?.scheduling?.room_url || runResult?.room_url || runResult?.results?.scheduling?.room_url;
-
+  // ── Render ──────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-[var(--color-canvas)] text-[var(--color-text-primary)] p-8">
-      <header className="mb-8 flex items-center justify-between border-b border-[var(--color-glass-border)] pb-6">
-        <div>
-          <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500">
-            TalentOps Autonomous Hiring Ecosystem
+    <div className="flex h-screen overflow-hidden bg-[var(--color-canvas)]">
+      {/* ── Sidebar ────────────────────────────────────────────────── */}
+      <nav className="w-[220px] shrink-0 border-r border-[var(--color-glass-border)] flex flex-col bg-[var(--color-surface)]">
+        {/* Logo */}
+        <div className="p-5 border-b border-[var(--color-glass-border)]">
+          <h1 className="text-lg font-bold text-[var(--color-text-primary)] tracking-tight">
+            TalentOps
           </h1>
-          <p className="text-[var(--color-text-secondary)] font-mono text-sm mt-2">
-            Real-Time Multi-Agent Hiring: Candidate Resume PDF → In-Platform Room → Live Interview → Manager AI Debrief
+          <p className="text-[11px] text-[var(--color-text-muted)] mt-0.5 font-medium">
+            AI Hiring Platform
           </p>
         </div>
-        
-        {/* Controls */}
-        <div className="flex gap-4 items-center">
-          <input 
-            type="text" 
-            value={interviewId} 
-            onChange={(e) => setInterviewId(e.target.value)} 
-            className="bg-[var(--color-glass-base)] border border-[var(--color-glass-border)] rounded-md px-4 py-2 font-mono text-sm focus:outline-none focus:border-cyan-500"
-            placeholder="Interview ID"
-          />
-          <DeployBot 
-            roleId={roleId} 
-            candidateId={candidateId}
-            interviewId={interviewId}
-            onDeployed={(id) => setInterviewId(id)}
-            onEnded={() => setActiveTab('hr')} 
-          />
-        </div>
-      </header>
 
-      {!supabase && (
-        <div className="glass-panel p-4 mb-6 text-amber-500 flex items-center gap-3">
-          <span className="text-xl">⚠️</span>
-          <p className="text-sm">Running in standalone mode. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY for live DB streaming.</p>
-        </div>
-      )}
+        {/* Nav Items */}
+        <div className="flex-1 p-3 flex flex-col gap-1">
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeView === item.id;
+            const isDisabled = (item.id === 'results' || item.id === 'evaluation') && !runResult && !interviewId;
 
-      {errorMessage && (
-        <div className="glass-panel p-4 mb-6 text-red-400 bg-red-950/40 border-red-500/50 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-xl">❌</span>
-            <p className="text-sm font-mono">{errorMessage}</p>
-          </div>
-          <button onClick={() => setErrorMessage('')} className="text-xs text-gray-400 hover:text-white">Dismiss</button>
+            return (
+              <button
+                key={item.id}
+                onClick={() => !isDisabled && setActiveView(item.id)}
+                disabled={isDisabled}
+                className={`w-full text-left px-3 py-2.5 rounded-xl flex items-center gap-3 transition-all duration-200 group ${
+                  isActive
+                    ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent)]'
+                    : isDisabled
+                    ? 'text-[var(--color-text-muted)] cursor-not-allowed opacity-40'
+                    : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-glass-hover)] hover:text-[var(--color-text-primary)]'
+                }`}
+              >
+                <Icon size={18} strokeWidth={isActive ? 2.5 : 2} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold leading-tight">{item.label}</div>
+                  <div className="text-[10px] opacity-60 leading-tight mt-0.5">{item.description}</div>
+                </div>
+                {isActive && (
+                  <ChevronRight size={14} className="opacity-50" />
+                )}
+              </button>
+            );
+          })}
         </div>
-      )}
 
-      {/* Top Section: Hiring Goal Input & LangGraph Pipeline Visualizer */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-        <div className="lg:col-span-1 glass-panel p-6 flex flex-col justify-between">
-          <div>
-            <h2 className="text-lg font-bold mb-3 text-cyan-400">🎯 Hiring Goal & Candidate Resume</h2>
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wider block mb-1">Hiring Role Goal</label>
-                <input
-                  type="text"
-                  value={goal}
-                  onChange={(e) => setGoal(e.target.value)}
-                  className="w-full bg-[var(--color-glass-base)] border border-[var(--color-glass-border)] rounded-md p-2 text-sm focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-[var(--color-text-secondary)] uppercase tracking-wider block mb-1">Evaluation Standard</label>
-                <textarea
-                  value={standard}
-                  onChange={(e) => setStandard(e.target.value)}
-                  rows="2"
-                  className="w-full bg-[var(--color-glass-base)] border border-[var(--color-glass-border)] rounded-md p-2 text-sm focus:outline-none focus:border-cyan-500"
-                />
-              </div>
-              <UploadZone onFileSelect={(file) => setSelectedFile(file)} />
+        {/* Pipeline Status Badge */}
+        {runResult && (
+          <div className="p-3 border-t border-[var(--color-glass-border)]">
+            <div className="px-3 py-2 rounded-lg bg-[var(--color-emerald-muted)] text-emerald-400 text-xs font-medium flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-emerald-400" />
+              Pipeline Complete
             </div>
           </div>
-          <button
-            onClick={handleRunPipeline}
-            disabled={running}
-            className="w-full py-3 px-4 mt-4 bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 font-bold rounded-lg transition-all shadow-lg shadow-cyan-500/20 disabled:opacity-50"
-          >
-            {running ? '⚡ Autonomous Agents Working...' : '🚀 Start Real Hiring Pipeline'}
-          </button>
-        </div>
+        )}
+        {running && (
+          <div className="p-3 border-t border-[var(--color-glass-border)]">
+            <div className="px-3 py-2 rounded-lg bg-[var(--color-accent-muted)] text-[var(--color-accent)] text-xs font-medium flex items-center gap-2">
+              <Loader2 size={12} className="animate-spin" />
+              Running Pipeline...
+            </div>
+          </div>
+        )}
+      </nav>
 
-        <div className="lg:col-span-2 space-y-4">
-          <PipelineVisualizer activeNode={activeNode} completedNodes={completedNodes} />
-          {runResult && (
-            <div className="glass-panel p-5 space-y-3 bg-cyan-950/20 border-cyan-500/30">
-              <div className="flex justify-between items-center text-xs font-mono border-b border-cyan-500/20 pb-2">
-                <div><span className="text-cyan-400 font-bold">Run ID:</span> {runResult.run_id}</div>
-                <div><span className="text-purple-400 font-bold">Decision:</span> <span className="text-amber-400 font-bold px-2 py-0.5 rounded bg-amber-500/20">{runResult.final_state?.stage || 'WAITING_FOR_INTERVIEW'}</span></div>
-                <div><span className="text-cyan-400 font-bold">Top Candidate:</span> {runResult.final_state?.top_candidate || 'Candidate'}</div>
+      {/* ── Main Content ───────────────────────────────────────────── */}
+      <main className="flex-1 overflow-y-auto">
+        {/* Error Banner */}
+        {errorMessage && (
+          <div className="m-6 mb-0 p-4 rounded-xl bg-[var(--color-rose-muted)] border border-rose-500/20 text-rose-300 flex items-center justify-between gap-4 animate-fade-in">
+            <div className="flex items-center gap-3">
+              <AlertCircle size={18} />
+              <span className="text-sm">{errorMessage}</span>
+            </div>
+            <button onClick={() => setErrorMessage('')} className="text-rose-400 hover:text-rose-300 p-1">
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
+        <div className="p-6 lg:p-8">
+          {/* ── Pipeline View ──────────────────────────────────────── */}
+          {activeView === 'pipeline' && (
+            <div className="animate-fade-in max-w-5xl mx-auto">
+              <div className="mb-8">
+                <h2 className="text-2xl font-bold text-[var(--color-text-primary)]">Hiring Pipeline</h2>
+                <p className="text-sm text-[var(--color-text-secondary)] mt-1">
+                  Upload a candidate resume, define the role, and let the AI agents handle the rest.
+                </p>
               </div>
 
-              {/* Candidate In-Platform Interview Room Card */}
-              {candidateRoomUrl && (
-                <div className="p-4 rounded-lg bg-gradient-to-r from-emerald-900/40 to-teal-900/40 border border-emerald-500/40 flex flex-col md:flex-row justify-between items-center gap-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
-                      <span>📹</span> Candidate In-Platform Interview Room
-                    </h3>
-                    <p className="text-xs text-gray-300 mt-1">
-                      WebRTC & WebSocket self-hosted interview room created for {runResult.final_state?.top_candidate || 'Candidate'}.
-                    </p>
-                    <div className="text-xs font-mono text-emerald-400 mt-1">
-                      Room Link: <a href={candidateRoomUrl} target="_blank" rel="noreferrer" className="underline">{candidateRoomUrl}</a>
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+                {/* Left: Configuration */}
+                <div className="lg:col-span-3 space-y-5">
+                  {/* Role Goal */}
+                  <div className="card">
+                    <div className="card-body space-y-4">
+                      <div>
+                        <label className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-2 block">
+                          Hiring Role
+                        </label>
+                        <input
+                          type="text"
+                          value={goal}
+                          onChange={(e) => setGoal(e.target.value)}
+                          className="input"
+                          placeholder="e.g. Senior Backend Engineer"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider mb-2 block">
+                          Evaluation Criteria
+                        </label>
+                        <textarea
+                          value={standard}
+                          onChange={(e) => setStandard(e.target.value)}
+                          rows="2"
+                          className="input textarea"
+                          placeholder="What skills and experience should we evaluate?"
+                        />
+                      </div>
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <a
-                      href={candidateRoomUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs rounded-md shadow transition-all flex items-center gap-1"
-                    >
-                      <span>🚀</span> Join Candidate Interview Room
-                    </a>
+
+                  {/* Upload Zone */}
+                  <UploadZone onFileSelect={(file) => setSelectedFile(file)} />
+
+                  {/* Run Button */}
+                  <button
+                    onClick={handleRunPipeline}
+                    disabled={running}
+                    className="btn btn-primary w-full py-3.5 text-base"
+                  >
+                    {running ? (
+                      <>
+                        <Loader2 size={18} className="animate-spin" />
+                        Agents Processing...
+                      </>
+                    ) : (
+                      <>
+                        <Rocket size={18} />
+                        Start Hiring Pipeline
+                      </>
+                    )}
+                  </button>
+
+                  {/* Room URL Card */}
+                  {candidateRoomUrl && (
+                    <div className="card animate-fade-in">
+                      <div className="card-body flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-emerald-400">Interview Room Ready</p>
+                          <p className="text-xs text-[var(--color-text-muted)] mt-1 font-mono truncate max-w-sm">{candidateRoomUrl}</p>
+                        </div>
+                        <a
+                          href={candidateRoomUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn btn-secondary btn-sm shrink-0"
+                        >
+                          Open Room
+                        </a>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Right: Pipeline Progress */}
+                <div className="lg:col-span-2">
+                  <PipelineVisualizer activeNode={activeNode} completedNodes={completedNodes} />
+
+                  {/* Run Summary */}
+                  {runResult && (
+                    <div className="card mt-5 animate-fade-in">
+                      <div className="card-body space-y-3">
+                        <h4 className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">Run Summary</h4>
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-[var(--color-text-muted)]">Run ID</span>
+                            <span className="font-mono text-xs text-[var(--color-text-secondary)]">{runResult.run_id}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-[var(--color-text-muted)]">Stage</span>
+                            <span className="badge bg-[var(--color-accent-muted)] text-[var(--color-accent)]">
+                              {runResult.final_state?.stage || 'COMPLETE'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-[var(--color-text-muted)]">Top Candidate</span>
+                            <span className="font-semibold">{runResult.final_state?.top_candidate || '—'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Results View ───────────────────────────────────────── */}
+          {activeView === 'results' && (
+            <div className="animate-fade-in">
+              <div className="mb-8 flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-[var(--color-text-primary)]">Results</h2>
+                  <p className="text-sm text-[var(--color-text-secondary)] mt-1">
+                    Interview transcript, candidate scorecard, and fairness analysis.
+                  </p>
+                </div>
+                {interviewId && (
+                  <span className="badge bg-[var(--color-glass-hover)] text-[var(--color-text-secondary)] border border-[var(--color-glass-border)]">
+                    {interviewId}
+                  </span>
+                )}
+              </div>
+
+              {!runResult && !interviewId ? (
+                <div className="card">
+                  <div className="card-body py-20 text-center">
+                    <BarChart3 size={40} className="mx-auto text-[var(--color-text-muted)] mb-4" />
+                    <p className="text-[var(--color-text-secondary)] font-medium">No results yet</p>
+                    <p className="text-sm text-[var(--color-text-muted)] mt-1">Run the hiring pipeline first to see results here.</p>
+                    <button onClick={() => setActiveView('pipeline')} className="btn btn-secondary btn-sm mt-4">
+                      Go to Pipeline
+                    </button>
                   </div>
                 </div>
-              )}
-
-              {/* Manager AI Debrief Meet Session Card */}
-              {managerDebriefInfo && (
-                <div className="p-4 rounded-lg bg-gradient-to-r from-cyan-900/40 to-purple-900/40 border border-cyan-500/40 flex flex-col md:flex-row justify-between items-center gap-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-cyan-300 flex items-center gap-2">
-                      <span>🧠</span> Manager AI Voice Debrief Session
-                    </h3>
-                    <p className="text-xs text-gray-300 mt-1">
-                      Receive a real-time voice briefing from the AI Manager Agent.
-                    </p>
-                    <div className="text-xs font-mono text-cyan-400 mt-1">
-                      Room Link: <a href={managerDebriefInfo.meet_link} target="_blank" rel="noreferrer" className="underline">{managerDebriefInfo.meet_link}</a>
-                    </div>
+              ) : (
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                  <div className="xl:row-span-2 min-h-[500px]">
+                    <TranscriptStream supabase={supabase} interviewId={interviewId || 'iv-alex'} />
                   </div>
-                  <div className="flex gap-2">
-                    <a
-                      href={managerDebriefInfo.meet_link}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={handleDeployManagerDebrief}
-                      className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs rounded-md shadow transition-all flex items-center gap-1"
-                    >
-                      <span>🎙️</span> Join Manager Room
-                    </a>
-                    {debriefDeployed && (
-                      <span className="px-2 py-2 bg-green-500/20 text-green-400 text-xs font-mono rounded flex items-center">
-                        ✓ AI Agent Active in Call
-                      </span>
-                    )}
+                  <div className="min-h-[280px]">
+                    <ScorecardView supabase={supabase} interviewId={interviewId || 'iv-alex'} />
+                  </div>
+                  <div className="min-h-[280px]">
+                    <FairnessHeatmap roleId={roleId} />
                   </div>
                 </div>
               )}
             </div>
           )}
+
+          {/* ── Evaluation View ─────────────────────────────────────── */}
+          {activeView === 'evaluation' && (
+            <div className="animate-fade-in">
+              <div className="mb-8">
+                <h2 className="text-2xl font-bold text-[var(--color-text-primary)]">Evaluation Report</h2>
+                <p className="text-sm text-[var(--color-text-secondary)] mt-1">
+                  Comprehensive AI evaluation, competency analysis, and manager debrief.
+                </p>
+              </div>
+
+              {!runResult && !interviewId ? (
+                <div className="card">
+                  <div className="card-body py-20 text-center">
+                    <ClipboardList size={40} className="mx-auto text-[var(--color-text-muted)] mb-4" />
+                    <p className="text-[var(--color-text-secondary)] font-medium">No evaluation available</p>
+                    <p className="text-sm text-[var(--color-text-muted)] mt-1">Run the hiring pipeline first to generate an evaluation.</p>
+                    <button onClick={() => setActiveView('pipeline')} className="btn btn-secondary btn-sm mt-4">
+                      Go to Pipeline
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <HREvaluationDashboard interviewId={interviewId || 'iv-alex'} />
+              )}
+            </div>
+          )}
         </div>
-      </div>
-
-      {/* View Mode Navigation Tabs */}
-      <div className="flex gap-2 mb-6 border-b border-[var(--color-glass-border)] pb-3">
-        <button
-          onClick={() => setActiveTab('live')}
-          className={`px-4 py-2 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
-            activeTab === 'live'
-              ? 'bg-cyan-500 text-black shadow-lg shadow-cyan-500/20'
-              : 'bg-[var(--color-glass-base)] text-gray-400 hover:text-white border border-[var(--color-glass-border)]'
-          }`}
-        >
-          <span>🎙️</span> Live Audio Stream & Pipeline
-        </button>
-        <button
-          onClick={() => setActiveTab('hr')}
-          className={`px-4 py-2 rounded-lg font-bold text-xs transition-all flex items-center gap-2 ${
-            activeTab === 'hr'
-              ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/20'
-              : 'bg-[var(--color-glass-base)] text-gray-400 hover:text-white border border-[var(--color-glass-border)]'
-          }`}
-        >
-          <span>📊</span> HR Evaluation Report Dashboard
-        </button>
-      </div>
-
-      {/* Conditional View Mode Content */}
-      {activeTab === 'hr' ? (
-        <HREvaluationDashboard interviewId={interviewId} />
-      ) : (
-        /* Main Grid: Live Audio Stream, Scorecard & Fairness Lens */
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <div className="flex flex-col gap-8 h-[650px]">
-            <div className="flex-1 min-h-0 relative">
-               <TranscriptStream supabase={supabase} interviewId={interviewId} />
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-8 h-[650px]">
-            <div className="flex-1 min-h-0">
-               <FairnessHeatmap roleId={roleId} />
-            </div>
-            <div className="flex-1 min-h-0">
-               <ScorecardView supabase={supabase} interviewId={interviewId} />
-            </div>
-          </div>
-        </div>
-      )}
+      </main>
     </div>
   );
 }

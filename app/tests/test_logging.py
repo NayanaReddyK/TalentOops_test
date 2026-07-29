@@ -189,7 +189,7 @@ class TestLoggingIntegration:
         """Test that health endpoint is configured in the app."""
         from app.main import app
         # Check that the health route exists
-        route_paths = [route.path for route in app.routes]
+        route_paths = [getattr(route, "path", "") for route in app.routes]
         assert "/health" in route_paths
 
 

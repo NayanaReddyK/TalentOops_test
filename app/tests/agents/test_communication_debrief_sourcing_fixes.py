@@ -101,7 +101,8 @@ async def test_manager_voice_regex_and_db_error_handling():
     meeting = ManagerVoiceMeeting(role_id="r-dev")
 
     # Word boundary regex check: "alteration" should NOT trigger refusal, but "alter" should
-    ans_normal = await meeting.answer("What is the candidate's alteration experience?")
+    with patch("app.services.database.db.query", new_callable=AsyncMock, return_value=[]):
+        ans_normal = await meeting.answer("What is the candidate's alteration experience?")
     assert "Pipeline state" in ans_normal
 
     refusal = await meeting.answer("Please alter the scoring pipeline")

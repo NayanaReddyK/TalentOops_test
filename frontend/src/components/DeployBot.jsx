@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
-import { Rocket, Loader2, PhoneOff, Copy, ExternalLink } from 'lucide-react';
+import { Video, Loader2, PhoneOff, Copy, ExternalLink } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000';
 
 export default function DeployBot({ roleId, candidateId, interviewId, onDeployed, onEnded }) {
-  const [roomId,    setRoomId]    = useState('');
-  const [roomUrl,   setRoomUrl]   = useState('');
-  const [creating,  setCreating]  = useState(false);
-  const [ending,    setEnding]    = useState(false);
-  const [copied,    setCopied]    = useState(false);
-  const [error,     setError]     = useState(null);
+  const [roomId,   setRoomId]   = useState('');
+  const [roomUrl,  setRoomUrl]  = useState('');
+  const [creating, setCreating] = useState(false);
+  const [ending,   setEnding]   = useState(false);
+  const [copied,   setCopied]   = useState(false);
+  const [error,    setError]    = useState(null);
 
   const handleCreate = async () => {
     setCreating(true);
@@ -61,69 +61,52 @@ export default function DeployBot({ roleId, candidateId, interviewId, onDeployed
   };
 
   return (
-    <div className="flex items-center gap-2 flex-wrap">
+    <div className="flex items-center gap-3 flex-wrap">
       {!roomId ? (
         <button
-          id="btn-create-room"
           onClick={handleCreate}
           disabled={creating}
-          className="flex items-center gap-2 bg-gradient-to-r from-cyan-600 to-cyan-500
-                     hover:from-cyan-500 hover:to-cyan-400 text-white px-4 py-2 rounded-md
-                     font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed
-                     shadow-[0_0_15px_rgba(6,182,212,0.4)]"
+          className="btn btn-primary"
         >
-          {creating ? <Loader2 size={16} className="animate-spin" /> : <Rocket size={16} />}
+          {creating ? <Loader2 size={16} className="animate-spin" /> : <Video size={16} />}
           Create Interview Room
         </button>
       ) : (
         <>
-          {/* room URL chip */}
-          <span className="bg-[var(--color-glass-base)] border border-[var(--color-glass-border)]
-                           rounded-md px-3 py-1.5 font-mono text-xs text-cyan-300 truncate max-w-[220px]"
-                title={roomUrl}>
+          <span
+            className="badge bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 truncate max-w-[240px]"
+            title={roomUrl}
+          >
             {roomUrl}
           </span>
 
-          {/* copy */}
-          <button
-            id="btn-copy-room-url"
-            onClick={handleCopy}
-            className="flex items-center gap-1.5 bg-white/10 hover:bg-white/15 border border-white/15
-                       text-slate-300 px-3 py-2 rounded-md text-sm transition-all"
-            title="Copy room URL"
-          >
+          <button onClick={handleCopy} className="btn btn-secondary btn-sm">
             <Copy size={14} />
             {copied ? 'Copied!' : 'Copy'}
           </button>
 
-          {/* open */}
           <a
-            id="btn-open-room"
             href={roomUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1.5 bg-cyan-600/20 border border-cyan-500/30
-                       text-cyan-300 hover:bg-cyan-500/30 px-3 py-2 rounded-md text-sm transition-all"
+            className="btn btn-secondary btn-sm"
           >
-            <ExternalLink size={14} /> Open
+            <ExternalLink size={14} />
+            Open
           </a>
 
-          {/* end */}
           <button
-            id="btn-end-room"
             onClick={handleEnd}
             disabled={ending}
-            className="flex items-center gap-2 bg-[var(--color-glass-base)] border border-rose-500/50
-                       hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-md font-medium
-                       transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            title="End Interview Room"
+            className="btn btn-ghost btn-sm text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
           >
-            {ending ? <Loader2 size={16} className="animate-spin" /> : <PhoneOff size={16} />}
+            {ending ? <Loader2 size={14} className="animate-spin" /> : <PhoneOff size={14} />}
             End & Evaluate
           </button>
         </>
       )}
-      {error && <span className="text-rose-500 text-sm ml-2">{error}</span>}
+
+      {error && <span className="text-rose-400 text-xs">{error}</span>}
     </div>
   );
 }

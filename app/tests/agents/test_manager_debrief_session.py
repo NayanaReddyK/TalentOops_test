@@ -24,7 +24,8 @@ async def test_manager_voice_meeting_read_only_enforcement():
     meeting = ManagerVoiceMeeting(role_id="role-402")
 
     # Normal query should return status
-    ans = await meeting.answer("Can you summarize candidate scores?")
+    with patch("app.services.database.db.query", new_callable=AsyncMock, return_value=[]):
+        ans = await meeting.answer("Can you summarize candidate scores?")
     assert "Pipeline state" in ans
 
     # Forbidden command attempting mutation mid-meeting MUST be refused

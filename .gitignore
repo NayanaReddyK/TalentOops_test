@@ -7,6 +7,7 @@
 *.env
 !.env.example
 token.json
+credentials*.json
 
 # Logs & Temporary Files
 *.log

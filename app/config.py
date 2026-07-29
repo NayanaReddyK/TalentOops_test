@@ -107,9 +107,23 @@ class Settings(BaseSettings):
         return self.OFFLINE_MODE and self.OFFLINE_MODE.lower() == "true"
 
     # Provider & Path Settings
-    EMAIL_PROVIDER: str = "smtp"
+    EMAIL_PROVIDER: str = "gmail"
+    CALENDAR_PROVIDER: str = "google"
+    GOOGLE_TOKEN_PATH: str = "token.json"
     FROM_ADDRESS: str = "noreply@talentops.ai"
     LLM_MODEL: str = "meta-llama/llama-3.3-70b-instruct"
+
+    @property
+    def email_provider(self) -> str:
+        return self.EMAIL_PROVIDER
+
+    @property
+    def calendar_provider(self) -> str:
+        return self.CALENDAR_PROVIDER
+
+    @property
+    def google_token_path(self) -> str:
+        return self.GOOGLE_TOKEN_PATH
 
     @property
     def email_provider(self) -> str:

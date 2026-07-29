@@ -64,7 +64,7 @@ class TestInterviewerFSM:
         assert self.fsm.brief == self.brief
         assert self.fsm.session == self.mock_session
         assert self.fsm.state == InterviewState.SANDBOX
-        assert self.fsm.threshold == 0.6
+        assert self.fsm.threshold == 0.65
         assert len(self.fsm.transitions) == 1
 
     def test_initial_transitions(self):

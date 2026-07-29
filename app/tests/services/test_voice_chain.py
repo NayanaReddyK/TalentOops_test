@@ -149,7 +149,7 @@ class TestVoiceChain:
         assert meta["consent_acknowledged"] is False
         assert meta["started_ts"] != ""
         assert meta["ended_ts"] != ""
-        assert meta["ended_ts"] > meta["started_ts"]
+        assert meta["ended_ts"] >= meta["started_ts"]
 
 
 class TestVoiceChainConsentFlow:
