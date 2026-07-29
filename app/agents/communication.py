@@ -136,7 +136,11 @@ def send_invite(
 ) -> dict[str, Any]:
     """Send an interview invitation email with a TalentOops room URL."""
     subject, body = _invite_body(candidate, slot, room_url)
-    return _send(run_id, "invite", candidate, subject, body, candidate_email)
+    try:
+        return _send(run_id, "invite", candidate, subject, body, candidate_email)
+    except Exception as exc:
+        logger.error("Failed to send invite email to %s: %s", candidate_email, exc)
+        return {"kind": "invite", "to": candidate_email, "error": str(exc)}
 
 
 def send_rejection(run_id: str, candidate: str, candidate_email: str | None = None) -> dict[str, Any]:

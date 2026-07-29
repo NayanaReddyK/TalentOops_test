@@ -45,7 +45,6 @@ def _insert_sync(row: dict[str, Any]) -> None:
         client.table("events").insert(row).execute()
     except Exception as e:
         logger.error("[event:insert_failed] %s: %s", type(e).__name__, str(e))
-        raise
 
 
 async def _write(row: dict[str, Any]) -> None:

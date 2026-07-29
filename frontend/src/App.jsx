@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Rocket, BarChart3, ClipboardList, Upload, ChevronRight, AlertCircle, X, Loader2 } from 'lucide-react';
+import { Rocket, BarChart3, ClipboardList, Upload, ChevronRight, AlertCircle, X, Loader2, Brain } from 'lucide-react';
 
 import UploadZone from './components/UploadZone';
 import PipelineVisualizer from './components/PipelineVisualizer';
@@ -304,6 +304,41 @@ function App() {
                             <span className="font-semibold">{runResult.final_state?.top_candidate || '—'}</span>
                           </div>
                         </div>
+
+                        {/* AI Extracted Candidate Details */}
+                        {(() => {
+                          const topId = runResult.final_state?.top_candidate;
+                          const candidates = runResult.final_state?.candidates || [];
+                          const topCand = candidates.find(c => c.id === topId || (typeof c.id === 'string' && c.id.includes(topId)));
+                          
+                          if (topCand && topCand.summary) {
+                            return (
+                              <div className="mt-4 pt-4 border-t border-[var(--color-glass-border)] space-y-3">
+                                <h4 className="text-xs font-semibold text-cyan-400 uppercase tracking-wider flex items-center gap-1">
+                                  <Brain size={14} /> AI Candidate Profile
+                                </h4>
+                                <div className="space-y-1">
+                                  {topCand.name && (
+                                    <div className="text-sm">
+                                      <span className="text-[var(--color-text-muted)]">Name: </span>
+                                      <span className="font-medium text-white/90">{topCand.name}</span>
+                                    </div>
+                                  )}
+                                  {topCand.email && (
+                                    <div className="text-sm">
+                                      <span className="text-[var(--color-text-muted)]">Email: </span>
+                                      <span className="font-medium text-white/90">{topCand.email}</span>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="rounded-lg bg-black/20 p-3 text-sm text-[var(--color-text-secondary)] leading-relaxed italic border border-white/[0.05]">
+                                  {topCand.summary}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
                       </div>
                     </div>
                   )}

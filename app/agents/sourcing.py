@@ -101,22 +101,60 @@ async def run_sourcing_async(run_id: str, goal: str, corpus: list[dict] | None =
             cand_skills = parsed.skills or []
             cand_projects = parsed.projects or []
 
-            # 1. Database persistence: Save candidate to candidates table
+            # --- AI Extraction & Eligibility Summary ---
             try:
-                await db.insert("candidates", {
-                    "id": cand_id,
-                    "name": cand_name,
-                    "email": cand_email if cand_email else None,
-                    "phone": cand_phone,
-                    "summary": cand_summary,
-                    "skills": cand_skills,
-                    "experience": [e.model_dump() for e in parsed.experience] if parsed.experience else [],
-                    "education": [e.model_dump() for e in parsed.education] if parsed.education else [],
-                    "raw_text": entry.get("text", ""),
-                    "resume_path": entry.get("pdf_path", ""),
-                })
+                from app.services.llm_clients import openrouter_chat
+                import json
+                
+                prompt = f"""
+                You are an expert HR recruiter. Read the following candidate resume text and extract the candidate's full name, email address, and write a brief summary of the candidate.
+                Most importantly, evaluate why this candidate is eligible or not eligible based on this goal: '{goal}'.
+                
+                Return ONLY a JSON object with these keys:
+                - candidate_name: string (the candidate's full name)
+                - email: string (the candidate's email address)
+                - eligibility_summary: string (why they are eligible or not eligible)
+                
+                Resume Text:
+                {entry.get("text", "")[:4000]}
+                """
+                llm_response = await openrouter_chat(
+                    [{"role": "user", "content": prompt}],
+                    json_mode=True,
+                    max_tokens=600
+                )
+                llm_data = json.loads(llm_response)
+                
+                if llm_data.get("candidate_name") and llm_data["candidate_name"].strip():
+                    cand_name = llm_data["candidate_name"].strip()
+                if llm_data.get("email") and llm_data["email"].strip():
+                    cand_email = llm_data["email"].strip()
+                if llm_data.get("eligibility_summary") and llm_data["eligibility_summary"].strip():
+                    cand_summary = llm_data["eligibility_summary"].strip()
+            except Exception as llm_exc:
+                logger.error("LLM extraction in sourcing failed: %s", llm_exc)
+
+            # 1. Database persistence: Save candidate to candidates table
+            candidate_payload = {
+                "id": cand_id,
+                "name": cand_name,
+                "email": cand_email if cand_email else None,
+                "phone": cand_phone,
+                "summary": cand_summary,
+                "skills": cand_skills,
+                "experience": [e.model_dump() for e in parsed.experience] if parsed.experience else [],
+                "education": [e.model_dump() for e in parsed.education] if parsed.education else [],
+                "raw_text": entry.get("text", ""),
+                "resume_path": entry.get("pdf_path", ""),
+            }
+            try:
+                await db.insert("candidates", candidate_payload)
             except Exception as exc:
-                logger.warning("Supabase candidate insert notice for candidate %s: %s", cand_id, exc)
+                logger.warning("Supabase candidate insert failed, attempting update for %s: %s", cand_id, exc)
+                try:
+                    await db.update("candidates", cand_id, candidate_payload)
+                except Exception as update_exc:
+                    logger.warning("Supabase candidate update failed for %s: %s", cand_id, update_exc)
 
             # 2. Database persistence: Save projects to projects table
             for proj in cand_projects:

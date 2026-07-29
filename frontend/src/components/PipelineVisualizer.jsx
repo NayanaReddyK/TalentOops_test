@@ -31,8 +31,11 @@ export default function PipelineVisualizer({ activeNode, completedNodes = [] }) 
       <div className="flex flex-col">
         {steps.map((step, index) => {
           const isLast = index === steps.length - 1;
-          const isActive = step.isOrchestrator ? false : activeNode === step.id;
-          const isDone = step.isOrchestrator ? true : completedNodes.includes(step.id);
+          const hasStarted = activeNode !== '' || completedNodes.length > 0;
+          const isFinished = activeNode === '' && completedNodes.length > 0;
+
+          const isActive = step.isOrchestrator ? (hasStarted && !isFinished) : activeNode === step.id;
+          const isDone = step.isOrchestrator ? isFinished : completedNodes.includes(step.id);
 
           const StepIcon = step.icon;
 
