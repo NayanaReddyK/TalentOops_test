@@ -89,7 +89,9 @@ function App() {
 
       if (data.final_state) {
         setCompletedNodes(data.final_state.completed || ['sourcing', 'screening', 'scheduling']);
-        if (data.final_state.top_candidate) {
+        if (data.final_state.results?.scheduling?.interview_id) {
+          setInterviewId(data.final_state.results.scheduling.interview_id);
+        } else if (data.final_state.top_candidate) {
           setInterviewId(`iv-${data.final_state.top_candidate}`);
         }
       }
