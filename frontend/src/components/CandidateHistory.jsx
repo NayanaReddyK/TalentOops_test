@@ -18,7 +18,7 @@ export default function CandidateHistory({ onViewReport }) {
           throw new Error('Failed to fetch candidate history');
         }
         const data = await response.json();
-        setHistory(data);
+        setHistory(data.history || []);
       } catch (err) {
         setError(err.message || 'An error occurred while fetching data');
       } finally {
