@@ -251,7 +251,7 @@ class _InteractiveRoomSession:
                 if msg_type == SignalType.SESSION_END.value:
                     logger.info("Client requested session end for room %s — signaling interview loop to evaluate", self.room_id)
                     await self._turn_queue.put("__END_SESSION__")
-                    break
+                    continue
 
 
 
