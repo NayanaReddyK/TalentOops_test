@@ -262,7 +262,7 @@ export default function InterviewRoom({ roomId }) {
   useEffect(() => {
     stageRef.current = stage;
     if (stage === STAGE.COMPLETE) {
-      window.location.href = `/?interviewId=${roomId}&tab=hr`;
+    window.location.href = `/?interviewId=${roomId}&tab=evaluation`;
     }
   }, [stage, roomId]);
 
@@ -437,7 +437,7 @@ export default function InterviewRoom({ roomId }) {
     wsRef.current?.close();
     await fetch(`${API_BASE}/rooms/${roomId}/end`, { method: 'POST' }).catch(() => {});
     setStage(STAGE.COMPLETE);
-    window.location.href = `/?interviewId=${roomId}&tab=hr`;
+    window.location.href = `/?interviewId=${roomId}&tab=evaluation`;
   };
 
 

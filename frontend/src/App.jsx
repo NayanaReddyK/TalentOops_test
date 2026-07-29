@@ -33,7 +33,13 @@ function App() {
   // ── State ───────────────────────────────────────────────────────────
   const urlParams = new URLSearchParams(window.location.search);
   const [roleId] = useState(urlParams.get('roleId') || 'r1');
-  const [activeView, setActiveView] = useState('pipeline');
+  
+  const initialTab = urlParams.get('tab');
+  const [activeView, setActiveView] = useState(
+    initialTab === 'hr' ? 'results' : 
+    initialTab === 'evaluation' ? 'evaluation' : 'pipeline'
+  );
+  
   const [interviewId, setInterviewId] = useState(urlParams.get('interviewId') || '');
 
   // Pipeline state
