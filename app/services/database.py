@@ -18,6 +18,7 @@ class TranscriptFinalizedError(Exception):
 class Database:
     def __init__(self) -> None:
         self._finalized: set[str] = set()
+        self._fallback_store: dict[str, dict[str, dict]] = {}
         global logger, metrics_collector
         if logger is None:
             from app.services.logging import get_metrics
@@ -30,6 +31,15 @@ class Database:
             data = self._sb().table(table).insert(row).execute().data
             return data[0] if data else row
         except Exception as e:
+            if "PGRST205" in str(e) or "404" in str(e):
+                if logger:
+                    logger.warning("Supabase table '%s' missing. Falling back to in-memory store.", table)
+                if table not in self._fallback_store:
+                    self._fallback_store[table] = {}
+                row_id = row.get("id") or str(uuid.uuid4())
+                row["id"] = row_id
+                self._fallback_store[table][row_id] = row
+                return row
             if logger:
                 logger.error(
                     "Remote table '%s' insert failed (%s: %s)",
@@ -51,6 +61,20 @@ class Database:
             data = query.execute().data
             return data[0] if data else None
         except Exception as e:
+            if "PGRST205" in str(e) or "404" in str(e):
+                table_store = self._fallback_store.setdefault(table, {})
+                if isinstance(row_id, dict):
+                    for k, v in table_store.items():
+                        if all(v.get(cond_k) == cond_v for cond_k, cond_v in row_id.items()):
+                            v.update(patch)
+                            return v
+                    return None
+                else:
+                    for k, v in table_store.items():
+                        if v.get(id_column) == row_id:
+                            v.update(patch)
+                            return v
+                    return None
             if logger:
                 logger.error(
                     "Remote table '%s' update failed (%s: %s)",
@@ -62,16 +86,29 @@ class Database:
 
     async def get(self, table: str, row_id: str) -> dict | None:
         """Fetch a row from database."""
-        data = self._sb().table(table).select("*").eq("id", row_id).execute().data
-        return data[0] if data else None
+        try:
+            data = self._sb().table(table).select("*").eq("id", row_id).execute().data
+            return data[0] if data else None
+        except Exception as e:
+            if "PGRST205" in str(e) or "404" in str(e):
+                return self._fallback_store.get(table, {}).get(row_id)
+            raise
 
     async def query(self, table: str, **eq: Any) -> list[dict]:
         """Query rows from database."""
-        q = self._sb().table(table).select("*")
-        for k, v in eq.items():
-            q = q.eq(k, v)
-        data = q.execute().data
-        return data if data is not None else []
+        try:
+            q = self._sb().table(table).select("*")
+            for k, v in eq.items():
+                q = q.eq(k, v)
+            data = q.execute().data
+            return data if data is not None else []
+        except Exception as e:
+            if "PGRST205" in str(e) or "404" in str(e):
+                rows = list(self._fallback_store.get(table, {}).values())
+                for k, v in eq.items():
+                    rows = [r for r in rows if r.get(k) == v]
+                return rows
+            raise
 
     async def append_transcript(self, interview_id: str, chunk: dict) -> None:
         if interview_id in self._finalized:
