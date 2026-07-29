@@ -9,6 +9,8 @@ import FairnessHeatmap from './components/FairnessHeatmap';
 import ScorecardView from './components/ScorecardView';
 import HREvaluationDashboard from './components/HREvaluationDashboard';
 import InterviewRoom from './components/InterviewRoom';
+import CandidateHistory from './components/CandidateHistory';
+import { Users } from 'lucide-react';
 
 // ── Supabase & API ────────────────────────────────────────────────────
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://qzthddhmxdcocikdhumh.supabase.co';
@@ -19,6 +21,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000';
 // ── Navigation Items ──────────────────────────────────────────────────
 const NAV_ITEMS = [
   { id: 'pipeline', label: 'Pipeline', icon: Rocket, description: 'Upload & Run' },
+  { id: 'history',  label: 'History',  icon: Users, description: 'Past Candidates' },
   { id: 'results',  label: 'Results',  icon: BarChart3, description: 'Scorecard & Transcript' },
   { id: 'evaluation', label: 'Evaluation', icon: ClipboardList, description: 'HR Report & Debrief' },
 ];
@@ -201,6 +204,16 @@ function App() {
         )}
 
         <div className="p-6 lg:p-8">
+          {/* ── History View ───────────────────────────────────────── */}
+          {activeView === 'history' && (
+            <CandidateHistory 
+              onViewReport={(id) => {
+                setInterviewId(id);
+                setActiveView('evaluation');
+              }}
+            />
+          )}
+
           {/* ── Pipeline View ──────────────────────────────────────── */}
           {activeView === 'pipeline' && (
             <div className="animate-fade-in max-w-5xl mx-auto">
