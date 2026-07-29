@@ -178,10 +178,19 @@ class LocalEmbedder:
         return [self.embed(t) for t in texts]
 
 
+_EMBEDDER_INSTANCE = None
+
 def get_embedder() -> Embedder:
+    global _EMBEDDER_INSTANCE
+    if _EMBEDDER_INSTANCE is not None:
+        return _EMBEDDER_INSTANCE
+
     settings = get_settings()
     if settings.embed_provider == "mock":
         raise ValueError("Mock embed provider is no longer supported. Enforcing REAL API execution.")
     if settings.embed_provider == "local":
-        return LocalEmbedder(settings.embed_dim)
-    return RemoteEmbedder(settings.embed_provider)
+        _EMBEDDER_INSTANCE = LocalEmbedder(settings.embed_dim)
+    else:
+        _EMBEDDER_INSTANCE = RemoteEmbedder(settings.embed_provider)
+    
+    return _EMBEDDER_INSTANCE
