@@ -103,7 +103,7 @@ async def run_sourcing_async(run_id: str, goal: str, corpus: list[dict] | None =
 
             # --- AI Extraction & Eligibility Summary ---
             try:
-                from app.services.llm_clients import openrouter_chat
+                from app.services.llm_clients import groq_chat
                 import json
                 
                 prompt = f"""
@@ -118,7 +118,7 @@ async def run_sourcing_async(run_id: str, goal: str, corpus: list[dict] | None =
                 Resume Text:
                 {entry.get("text", "")[:4000]}
                 """
-                llm_response = await openrouter_chat(
+                llm_response = await groq_chat(
                     [{"role": "user", "content": prompt}],
                     json_mode=True,
                     max_tokens=600
